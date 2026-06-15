@@ -39,6 +39,53 @@ import uvicorn
 from dotenv import load_dotenv
 
 
+def _promote_editable_finders() -> None:
+    """Move all _EditableFinder entries above PathFinder in sys.meta_path.
+
+    When running from a monorepo (cwd = .../silvaengine/), PathFinder
+    discovers silvaengine_* project-root directories and creates namespace
+    packages — shadowing the correct SourceFileLoader specs from pip's
+    editable finders.  This fix ensures editable installs resolve first.
+    """
+    import sys
+    from importlib.machinery import PathFinder
+
+    meta_path = sys.meta_path
+    # Editable finders are class objects (not instances), so we check
+    # f.__name__ rather than type(f).__name__.
+    editable = [
+        f for f in meta_path
+        if hasattr(f, "__name__") and f.__name__ == "_EditableFinder"
+    ]
+    if not editable:
+        return
+
+    pf_index = None
+    for i, finder in enumerate(meta_path):
+        if finder is PathFinder:
+            pf_index = i
+            break
+
+    if pf_index is None:
+        return
+
+    if all(meta_path.index(f) < pf_index for f in editable):
+        return  # Already correct
+
+    for f in editable:
+        meta_path.remove(f)
+    for i, finder in enumerate(meta_path):
+        if finder is PathFinder:
+            pf_index = i
+            break
+    for f in reversed(editable):
+        meta_path.insert(pf_index, f)
+
+
+# Apply fix before any silvaengine imports
+_promote_editable_finders()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Launch the SilvaEngine Gateway daemon for integration testing"
@@ -142,6 +189,20 @@ def main() -> None:
         "neo4j_database": os.getenv("neo4j_database", "neo4j"),
         # Cache
         "cache_enabled": int(os.getenv("cache_enabled", "0")),
+        # Cross-module routing (local invocations)
+        # functs_on_local maps dispatch names to module/class entries
+        # so Invoker.invoke_funct_on_local can call them in-process.
+        # e.g. ai_rfq_engine's inquire_catalog needs to call KGE's search.
+        "functs_on_local": {
+            "knowledge_graph_graphql": {
+                "module_name": os.getenv("FUNCTS_KGE_MODULE", "knowledge_graph_engine"),
+                "class_name": os.getenv("FUNCTS_KGE_CLASS", "KnowledgeGraphEngine"),
+            },
+            "ai_rfq_graphql": {
+                "module_name": os.getenv("FUNCTS_RFQ_MODULE", "ai_rfq_engine"),
+                "class_name": os.getenv("FUNCTS_RFQ_CLASS", "AIRFQEngine"),
+            },
+        },
     }
 
     # ── Create app ──────────────────────────────────────────────────

@@ -1,23 +1,35 @@
 # SilvaEngine Gateway
 
 FastAPI gateway for authenticated, in-process access to installed SilvaEngine
-modules. The gateway currently exposes Knowledge Graph Engine (KGE) GraphQL and
-background extraction routes through a configurable route manifest.
+modules. The gateway exposes module GraphQL and REST routes through a
+configurable YAML route manifest — adding a new module requires only manifest
+changes, zero gateway Python code.
 
 ## Current Features
 
 - Local JWT or AWS Cognito authentication
 - Public health check and authenticated user-claims endpoint
 - YAML or JSON route manifests with dynamic dispatch imports
+- **Auto-initialization of module Config classes** from manifest `config_class` declarations
 - Per-IP in-memory rate limiting
 - Thread-pool execution for synchronous dispatch functions
 - Pluggable task-state backend, with an in-memory default
 
+## Registered Modules
+
+| Module | Package | Config Init Style | Route |
+|---|---|---|---|
+| Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | `POST /{endpoint_id}/{part_id}/knowledge_graph_graphql` |
+| Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | `POST /{endpoint_id}/{part_id}/extract` |
+| Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | `GET /{endpoint_id}/{part_id}/extract/status/{task_id}` |
+| AI RFQ Engine | `ai_rfq_engine` | `dict` | `POST /{endpoint_id}/{part_id}/ai_rfq_graphql` |
+
 ## Requirements
 
 - Python 3.10 or later
-- The `knowledge_graph_engine` package and its service dependencies
+- The `knowledge_graph_engine` and `ai_rfq_engine` packages and their service dependencies
 - DynamoDB, Neo4j, and model-provider configuration when exercising KGE routes
+- DynamoDB and model-provider configuration when exercising AI RFQ Engine routes
 
 ## Install And Run
 
@@ -38,7 +50,7 @@ Invoke-RestMethod http://localhost:8000/health
 ## Authentication
 
 `POST /auth/token` accepts OAuth2 form fields (`username` and `password`).
-Protected routes require `Authorization: Bearer <token>`.
+Protected routes require `Authorization: Bearer ***`
 
 Local authentication supports either:
 
@@ -58,8 +70,9 @@ The default `JWT_SECRET_KEY=CHANGEME` is for development only.
 | `POST` | `/{endpoint_id}/{part_id}/knowledge_graph_graphql` | Yes | Execute KGE GraphQL |
 | `POST` | `/{endpoint_id}/{part_id}/extract` | Yes | Submit KGE extraction |
 | `GET` | `/{endpoint_id}/{part_id}/extract/status/{task_id}` | Yes | Poll extraction status |
+| `POST` | `/{endpoint_id}/{part_id}/ai_rfq_graphql` | Yes | Execute AI RFQ Engine GraphQL |
 
-KGE dispatch routes require a `Part-Id` header. The gateway builds
+All module dispatch routes require a `Part-Id` header. The gateway builds
 `partition_key` as `<endpoint_id>#<Part-Id>` and passes it to the core dispatch
 function.
 
@@ -74,22 +87,76 @@ The gateway loads routes in this order:
 
 `GATEWAY_ROUTES_CONFIG_JSON` must contain a JSON array of module objects.
 
+### Module Specification
+
+Each module entry in the manifest declares:
+
 ```yaml
 modules:
-  - name: knowledge_graph_engine
-    package: knowledge_graph_engine
-    transport: graphql
+  - name: my_module
+    package: my_module                  # Python package name
+    transport: graphql                  # "graphql" | "rest" | "hybrid"
+    config_class: "my_module.handlers.config:Config"  # auto-init at startup
+    config_init_style: dict             # "dict" → Config.initialize(logger, setting)
     routes:
-      - path: "/{endpoint_id}/{part_id}/knowledge_graph_graphql"
-        handler_type: graphql
-        dispatch: "knowledge_graph_engine.main:dispatch_graphql"
+      - path: "/{endpoint_id}/{part_id}/my_graphql"
+        handler_type: graphql           # "graphql" | "rest" | "background" | "task_status"
+        dispatch: "my_module.main:dispatch_graphql"
         methods: ["POST"]
         auth: true
 ```
 
-Supported `handler_type` values are `graphql`, `rest`, `background`, and
-`task_status`. GraphQL, REST, and background routes require a `dispatch` target
-in `package.module:function` or dotted notation.
+**Key fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Module identifier (used for logging) |
+| `package` | Yes | Python package to import |
+| `transport` | No | `graphql` (default), `rest`, or `hybrid` |
+| `config_class` | No | Dotted path to Config class (e.g. `pkg.module:Class`). If set, `Config.initialize()` is called at gateway startup with filtered settings. |
+| `config_init_style` | No | `dict` (default) → `Config.initialize(logger, setting_dict)`. Use `kwargs` for `Config.initialize(logger, **setting_dict)`. |
+| `config_exclude_keys` | No | Gateway-only keys to strip before passing to Config (defaults to auth, server, and routes keys) |
+| `routes` | Yes | List of route specifications |
+
+**Route fields:**
+
+| Field | Required | Description |
+|---|---|---|
+| `path` | Yes | URL path template |
+| `handler_type` | No | `graphql` (default), `rest`, `background`, or `task_status` |
+| `dispatch` | Yes* | Dotted path to dispatch function (`pkg.module:function`). Required for `graphql`, `rest`, `background`. |
+| `methods` | No | HTTP methods (default: `["POST"]`) |
+| `auth` | No | Require authentication (default: `true`) |
+
+\* `task_status` routes use a built-in handler and do not need `dispatch`.
+
+### Adding a New Module
+
+To add a new module to the gateway, edit `routes.yaml` (or provide a custom
+manifest via env vars). No gateway Python code changes are needed.
+
+The module's `Config` class must implement:
+
+- `initialize(logger, setting)` — called once at gateway startup
+- `get_logger()` → returns the stored logger
+- `get_setting()` → returns the stored setting dict
+
+And the module must provide a `dispatch_graphql(**params)` function (or
+similar) that creates a short-lived engine instance and calls its GraphQL
+method.
+
+### Config Auto-Initialization
+
+When a module declares `config_class`, the gateway:
+
+1. Resolves the class via `importlib` at startup
+2. Filters the gateway setting dict (removing `config_exclude_keys`)
+3. Calls `Config.initialize(logger, setting)` (or `Config.initialize(logger, **setting)` if `config_init_style: kwargs`)
+
+This replaces the need for any hard-coded `_init_xxx_config()` function in
+`app.py`. The default `config_exclude_keys` strips gateway-specific auth,
+server, and routing keys so only infrastructure/service settings reach the
+module Config.
 
 Manifest dispatch targets are imported at startup. Treat custom manifests as
 trusted deployment configuration; import-prefix allowlisting is not yet
@@ -120,7 +187,8 @@ implemented.
 | `GATEWAY_RATE_LIMIT` | `100` | Requests per client IP and window |
 | `GATEWAY_RATE_WINDOW` | `60` | Rate-limit window in seconds |
 
-KGE infrastructure settings are forwarded from the gateway startup settings.
+Infrastructure settings (AWS, Neo4j, LLM, etc.) are forwarded from the gateway
+startup settings to module Config classes via the `config_class` mechanism.
 See [`silvaengine_gateway/tests/.env.example`](silvaengine_gateway/tests/.env.example)
 for the currently supported development variables.
 

@@ -8,8 +8,9 @@ version = "0.1.0"
 description = "SilvaEngine Gateway - FastAPI gateway with auth, module routing, and dispatch"
 requires-python = ">=3.10"
 dependencies = [
-    # Core dependency
+    # Core dependencies
     "knowledge_graph_engine",
+    "ai_rfq_engine",
     # FastAPI stack
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",

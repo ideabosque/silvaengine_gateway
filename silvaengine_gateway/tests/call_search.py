@@ -66,6 +66,53 @@ import requests
 from dotenv import load_dotenv
 
 
+def _promote_editable_finders() -> None:
+    """Move all _EditableFinder entries above PathFinder in sys.meta_path.
+
+    When running from a monorepo (cwd = .../silvaengine/), PathFinder
+    discovers silvaengine_* project-root directories and creates namespace
+    packages — shadowing the correct SourceFileLoader specs from pip's
+    editable finders.  This fix ensures editable installs resolve first.
+    """
+    import sys
+    from importlib.machinery import PathFinder
+
+    meta_path = sys.meta_path
+    # Editable finders are class objects (not instances), so we check
+    # f.__name__ rather than type(f).__name__.
+    editable = [
+        f for f in meta_path
+        if hasattr(f, "__name__") and f.__name__ == "_EditableFinder"
+    ]
+    if not editable:
+        return
+
+    pf_index = None
+    for i, finder in enumerate(meta_path):
+        if finder is PathFinder:
+            pf_index = i
+            break
+
+    if pf_index is None:
+        return
+
+    if all(meta_path.index(f) < pf_index for f in editable):
+        return  # Already correct
+
+    for f in editable:
+        meta_path.remove(f)
+    for i, finder in enumerate(meta_path):
+        if finder is PathFinder:
+            pf_index = i
+            break
+    for f in reversed(editable):
+        meta_path.insert(pf_index, f)
+
+
+# Apply fix before any silvaengine imports
+_promote_editable_finders()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Call KGE search through the SilvaEngine Gateway"

@@ -70,6 +70,25 @@ class ModuleSpec(BaseModel):
     routes: List[RouteSpec] = Field(default_factory=list)
     config: Dict[str, Any] = Field(default_factory=dict)
 
+    # Module Config auto-initialization
+    config_class: Optional[str] = None
+    # "package.module:ClassName" — resolved via importlib at startup
+    # e.g. "knowledge_graph_engine.handlers.config:Config"
+
+    config_init_style: str = "dict"
+    # "dict"   → Config.initialize(logger, setting)     (KGE pattern)
+    # "kwargs" → Config.initialize(logger, **setting)     (ai_rfq_engine pattern)
+
+    config_exclude_keys: List[str] = Field(default_factory=lambda: [
+        # Gateway-only keys never passed to module configs
+        "auth_provider", "jwt_secret_key", "jwt_algorithm", "access_token_exp",
+        "admin_username", "admin_password", "admin_static_token",
+        "cognito_user_pool_id", "cognito_app_client_id", "cognito_app_secret",
+        "cognito_jwks_url", "jwks_cache_ttl", "local_user_file",
+        "host", "port", "workers",
+        "routes_config_path", "routes_config_json",
+    ])
+
 
 # ---------------------------------------------------------------------------
 # Dispatch resolution
@@ -330,6 +349,65 @@ def _make_task_status_handler() -> Callable:
 # ---------------------------------------------------------------------------
 # Router builder
 # ---------------------------------------------------------------------------
+
+
+def init_module_configs(
+    modules: List[ModuleSpec],
+    setting: Dict[str, Any],
+) -> None:
+    """
+    Auto-initialize module Config classes declared in the route manifest.
+
+    For each module with a ``config_class`` field, this resolves the class
+    via importlib, filters the gateway setting dict (stripping
+    ``config_exclude_keys``), and calls ``Config.initialize(logger, ...)``.
+
+    The calling convention is controlled by ``config_init_style``:
+    - ``"dict"``   → ``Config.initialize(logger, setting_dict)``
+    - ``"kwargs"`` → ``Config.initialize(logger, **setting_dict)``
+
+    Modules without ``config_class`` are skipped — their Config must be
+    initialized elsewhere or they don't need gateway-managed init.
+    """
+    for module in modules:
+        if not module.config_class:
+            continue
+
+        try:
+            # Resolve "package.module:ClassName" → the Config class
+            config_cls = resolve_dispatch(module.config_class)
+        except (ImportError, AttributeError, TypeError) as e:
+            logger.warning(
+                f"Module '{module.name}': config_class '{module.config_class}' "
+                f"could not be resolved — skipping init: {e}"
+            )
+            continue
+
+        # Filter gateway-only keys
+        module_setting = {
+            k: v for k, v in setting.items()
+            if k not in module.config_exclude_keys
+        }
+
+        if not module_setting:
+            logger.debug(f"Module '{module.name}': no settings to pass after filtering — skipping init")
+            continue
+
+        module_logger = logging.getLogger(module.name)
+
+        try:
+            if module.config_init_style == "kwargs":
+                config_cls.initialize(module_logger, **module_setting)
+            else:
+                # Default: dict style
+                config_cls.initialize(module_logger, module_setting)
+
+            logger.info(
+                f"Module '{module.name}': Config initialized "
+                f"(style={module.config_init_style}, keys={len(module_setting)})"
+            )
+        except Exception as e:
+            logger.warning(f"Module '{module.name}': Config.initialize() failed: {e}")
 
 
 def build_router_from_manifest(

@@ -29,6 +29,71 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Fix editable-install namespace shadowing
+# ---------------------------------------------------------------------------
+# When running from a project monorepo (cwd = .../silvaengine/), Python's
+# PathFinder discovers silvaengine_* directories (project roots without
+# __init__.py) and creates namespace packages — overriding the correct
+# SourceFileLoader specs from pip's editable finders.  Moving all
+# _EditableFinder instances above PathFinder ensures they resolve first.
+# ---------------------------------------------------------------------------
+
+def _promote_editable_finders() -> None:
+    """Move all _EditableFinder entries above PathFinder in sys.meta_path.
+
+    When running from a monorepo (cwd = .../silvaengine/), PathFinder
+    discovers silvaengine_* project-root directories and creates namespace
+    packages — shadowing the correct SourceFileLoader specs from pip's
+    editable finders.  This fix ensures editable installs resolve first.
+    """
+    import sys as _sys
+    from importlib.machinery import PathFinder as _PathFinder
+
+    meta_path = _sys.meta_path
+    # Editable finders are class objects (not instances), so we check
+    # f.__name__ rather than type(f).__name__.
+    editable = [
+        f for f in meta_path
+        if hasattr(f, "__name__") and f.__name__ == "_EditableFinder"
+    ]
+    if not editable:
+        return
+
+    pf_index = None
+    for i, finder in enumerate(meta_path):
+        if finder is _PathFinder:
+            pf_index = i
+            break
+
+    if pf_index is None:
+        return
+
+    # Check if any editable finder is already above PathFinder
+    editable_indices = [meta_path.index(f) for f in editable]
+    if all(idx < pf_index for idx in editable_indices):
+        return  # Already in correct order
+
+    # Remove editable finders and re-insert above PathFinder
+    for f in editable:
+        meta_path.remove(f)
+    # PathFinder may have shifted; find its new index
+    for i, finder in enumerate(meta_path):
+        if finder is _PathFinder:
+            pf_index = i
+            break
+    for f in reversed(editable):
+        meta_path.insert(pf_index, f)
+
+    logger.debug(
+        f"Promoted {len(editable)} editable finder(s) above PathFinder "
+        f"in sys.meta_path"
+    )
+
+
+_promote_editable_finders()
+
+
+# ---------------------------------------------------------------------------
 # Route manifest loading
 # ---------------------------------------------------------------------------
 
@@ -125,8 +190,12 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     gw_logger = logging.getLogger("silvaengine_gateway")
     GatewayConfig.initialize(gw_logger, setting)
 
-    # Initialize core KGE config
-    _init_core_config(setting)
+    # Load route manifest
+    manifest = load_route_manifest(GatewayConfig)
+
+    # Auto-initialize module Config classes declared in manifest
+    from .router_builder import init_module_configs
+    init_module_configs(manifest, setting)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -174,8 +243,7 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     from .routes.health import router as health_router
     app.include_router(health_router)
 
-    # Load and validate route manifest
-    manifest = load_route_manifest(GatewayConfig)
+    # Validate and build dynamic routes from manifest (already loaded above)
     warnings = validate_manifest(manifest)
     for w in warnings:
         gw_logger.warning(f"Route manifest warning: {w}")
@@ -190,30 +258,6 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     app.include_router(router)
 
     return app
-
-
-def _init_core_config(setting: Dict[str, Any]) -> None:
-    """Initialize the core knowledge_graph_engine Config from shared settings."""
-    try:
-        from knowledge_graph_engine.handlers.config import Config as KGEConfig
-
-        kge_settings = {
-            k: v for k, v in setting.items()
-            if k not in (
-                "auth_provider", "jwt_secret_key", "jwt_algorithm", "access_token_exp",
-                "admin_username", "admin_password", "admin_static_token",
-                "cognito_user_pool_id", "cognito_app_client_id", "cognito_app_secret",
-                "cognito_jwks_url", "jwks_cache_ttl", "local_user_file",
-                "host", "port", "workers",
-                "routes_config_path", "routes_config_json",
-            )
-        }
-
-        if kge_settings:
-            logger_msg = logging.getLogger("knowledge_graph_engine")
-            KGEConfig.initialize(logger_msg, kge_settings)
-    except Exception as e:
-        logger.warning(f"Could not initialize KGE Config: {e}")
 
 
 def run_gateway() -> None:
@@ -280,6 +324,17 @@ def run_gateway() -> None:
         "neo4j_database": os.getenv("neo4j_database", "neo4j"),
         # Cache
         "cache_enabled": int(os.getenv("cache_enabled", "0")),
+        # Cross-module routing (local invocations)
+        "functs_on_local": {
+            "knowledge_graph_graphql": {
+                "module_name": os.getenv("FUNCTS_KGE_MODULE", "knowledge_graph_engine"),
+                "class_name": os.getenv("FUNCTS_KGE_CLASS", "KnowledgeGraphEngine"),
+            },
+            "ai_rfq_graphql": {
+                "module_name": os.getenv("FUNCTS_RFQ_MODULE", "ai_rfq_engine"),
+                "class_name": os.getenv("FUNCTS_RFQ_CLASS", "AIRFQEngine"),
+            },
+        },
     }
 
     app = create_app(setting)

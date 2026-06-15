@@ -7,7 +7,7 @@ python -m pip install -e ".[dev]"
 Copy-Item silvaengine_gateway/tests/.env.example silvaengine_gateway/tests/.env
 ```
 
-Fill in the required authentication and KGE service settings, then run:
+Fill in the required authentication and service settings, then run:
 
 ```powershell
 python -m silvaengine_gateway
@@ -50,14 +50,30 @@ The JWKS URL is derived from the region and user-pool ID unless
 Cognito Identity Provider client, which the gateway creates when AWS
 credentials are supplied.
 
-## Calling A KGE Route
+## Calling Module Routes
 
-Protected KGE routes require both a bearer token and `Part-Id`:
+Protected module routes require both a bearer token and `Part-Id`:
+
+### Knowledge Graph Engine
 
 ```powershell
 Invoke-RestMethod `
   -Method Post `
   -Uri http://localhost:8000/demo/acme/knowledge_graph_graphql `
+  -Headers @{
+    Authorization = "Bearer $token"
+    "Part-Id" = "acme"
+  } `
+  -ContentType "application/json" `
+  -Body '{"query":"{ __schema { queryType { name } } }"}'
+```
+
+### AI RFQ Engine
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://localhost:8000/demo/acme/ai_rfq_graphql `
   -Headers @{
     Authorization = "Bearer $token"
     "Part-Id" = "acme"
@@ -72,6 +88,38 @@ Use `GATEWAY_ROUTES_CONFIG_PATH` for a deployment-owned YAML or JSON file, or
 `GATEWAY_ROUTES_CONFIG_JSON` for an inline JSON array. The schema is documented
 in the project README and demonstrated by
 `silvaengine_gateway/routes.yaml`.
+
+### Adding a New Module
+
+To register a new module, add an entry to the route manifest. No gateway Python
+code changes are needed.
+
+```yaml
+modules:
+  - name: my_new_module
+    package: my_new_module
+    transport: graphql
+    config_class: "my_new_module.handlers.config:Config"
+    config_init_style: dict
+    routes:
+      - path: "/{endpoint_id}/{part_id}/my_new_graphql"
+        handler_type: graphql
+        dispatch: "my_new_module.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+```
+
+**Prerequisites for the module package:**
+
+1. A `Config` class with `initialize(logger, setting)` and `get_logger()` /
+   `get_setting()` class methods
+2. A `dispatch_graphql(**params)` function (or similar) that creates a
+   short-lived engine instance using `Config.get_logger()` and
+   `Config.get_setting()`
+
+**Config auto-initialization:** When `config_class` is declared, the gateway
+resolves it at startup, filters out gateway-only keys (auth, server, routing),
+and calls `Config.initialize(logger, setting)` before any requests are served.
 
 Custom dispatch paths are imported into the gateway process. Only use manifests
 controlled by the deployment owner.
@@ -109,5 +157,5 @@ The current `python -m silvaengine_gateway` entry point starts one Uvicorn
 process. For ECS/Fargate, run one process per container unless a shared task
 backend and an external multi-worker launch strategy are configured.
 
-Lambda deployments should use `knowledge_graph_engine` directly; this FastAPI
-gateway is intended for long-running HTTP services.
+Lambda deployments should use `knowledge_graph_engine` or `ai_rfq_engine`
+directly; this FastAPI gateway is intended for long-running HTTP services.
