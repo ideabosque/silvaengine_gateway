@@ -7,6 +7,12 @@ from fastapi.testclient import TestClient
 from silvaengine_gateway.app import create_app
 
 
+def test_create_app_from_environment_defaults():
+    """Test that create_app can initialize without an explicit settings dict."""
+    app = create_app()
+    assert app.title == "SilvaEngine Gateway"
+
+
 def test_create_app():
     """Test that create_app returns a FastAPI app."""
     app = create_app({

@@ -157,21 +157,17 @@ def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
 
 
 def _extract_partition_key(request: Request) -> tuple:
-    """Extract partition_key from path params and Part-Id header.
+    """Extract partition_key from the endpoint path and Part-Id header.
 
-    Reads endpoint_id and part_id from FastAPI path parameters (resolved
-    at request time), NOT from the static route path string.
+    The path-level ``part_id`` remains part of the public URL, but the header is
+    required so callers explicitly identify the partition used by core
+    dispatch functions.
 
     Returns (partition_key, endpoint_id, part_id).
     Raises HTTPException(400) if Part-Id header is missing.
     """
-    # Read from resolved path params, not the route template string
     endpoint_id = request.path_params.get("endpoint_id", "")
     part_id = request.headers.get("Part-Id") or request.headers.get("Part-ID")
-
-    if not part_id:
-        # Try part_id from path params as fallback
-        part_id = request.path_params.get("part_id", "")
 
     if not part_id:
         raise HTTPException(
@@ -207,6 +203,7 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
             params["context"] = {}
         params["context"]["partition_key"] = partition_key
         params["context"]["part_id"] = part_id
+        params["partition_key"] = partition_key
         params["endpoint_id"] = endpoint_id
         params["part_id"] = part_id
 
@@ -252,6 +249,7 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
             params["context"] = {}
         params["context"]["partition_key"] = partition_key
         params["context"]["part_id"] = part_id
+        params["partition_key"] = partition_key
         params["endpoint_id"] = endpoint_id
         params["part_id"] = part_id
 

@@ -9,12 +9,19 @@ These tests use the .env file in tests/ for AWS + Neo4j credentials.
 """
 
 import json
+import os
 import time
 
 import pytest
 
 # Mark all tests in this module as integration tests
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("RUN_GATEWAY_INTEGRATION") != "1",
+        reason="set RUN_GATEWAY_INTEGRATION=1 to run live gateway integration tests",
+    ),
+]
 
 
 class TestHealthAndAuth:

@@ -115,6 +115,16 @@ def get_task_backend() -> TaskBackend:
     return _task_backend
 
 
+def set_task_backend(backend: TaskBackend) -> None:
+    """Replace the process-wide task backend used by gateway routes."""
+    if not isinstance(backend, TaskBackend):
+        raise TypeError("backend must implement TaskBackend")
+
+    global _task_backend, _task_manager
+    _task_backend = backend
+    _task_manager = TaskManager(backend)
+
+
 def get_task_manager() -> TaskManager:
     """Return the current TaskManager instance."""
     global _task_manager

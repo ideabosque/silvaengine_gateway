@@ -9,6 +9,18 @@ from silvaengine_gateway.router_builder import (
     resolve_dispatch,
     validate_manifest,
 )
+from silvaengine_gateway.tasks import (
+    InMemoryTaskBackend,
+    get_task_backend,
+    set_task_backend,
+)
+
+
+def test_task_backend_can_be_replaced():
+    """Test the public backend installation API used by deployments."""
+    backend = InMemoryTaskBackend()
+    set_task_backend(backend)
+    assert get_task_backend() is backend
 
 
 def test_module_spec_validation():
@@ -20,7 +32,7 @@ def test_module_spec_validation():
         routes=[
             RouteSpec(
                 path="/{endpoint_id}/{part_id}/knowledge_graph_graphql",
-                adapter="knowledge_graph_engine.main:dispatch_graphql",
+                dispatch="knowledge_graph_engine.main:dispatch_graphql",
                 methods=["POST"],
                 auth=True,
             )
@@ -29,8 +41,8 @@ def test_module_spec_validation():
     assert module.name == "knowledge_graph_engine"
     assert len(module.routes) == 1
     assert module.routes[0].auth is True
-    assert module.routes[0].adapter == "knowledge_graph_engine.main:dispatch_graphql"
-    assert module.routes[0].background is False
+    assert module.routes[0].dispatch == "knowledge_graph_engine.main:dispatch_graphql"
+    assert module.routes[0].handler_type == "graphql"
 
 
 def test_resolve_dispatch_invalid_module():
@@ -52,14 +64,14 @@ def test_validate_manifest_duplicate_paths():
             name="mod1",
             package="mod1",
             routes=[
-                RouteSpec(path="/test", adapter="mod1:handler", methods=["POST"]),
+                RouteSpec(path="/test", dispatch="mod1:handler", methods=["POST"]),
             ],
         ),
         ModuleSpec(
             name="mod2",
             package="mod2",
             routes=[
-                RouteSpec(path="/test", adapter="mod2:handler", methods=["POST"]),
+                RouteSpec(path="/test", dispatch="mod2:handler", methods=["POST"]),
             ],
         ),
     ]
@@ -90,7 +102,7 @@ def test_validate_manifest_invalid_adapter():
             routes=[
                 RouteSpec(
                     path="/test",
-                    adapter="nonexistent.module:handler",
+                    dispatch="nonexistent.module:handler",
                     methods=["POST"],
                 ),
             ],

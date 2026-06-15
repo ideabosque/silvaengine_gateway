@@ -13,27 +13,11 @@ __author__ = "silvaengine"
 import logging
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import boto3
 
-
-class LocalUser:
-    """Simple local user for JWT auth."""
-
-    def __init__(self, username: str, hashed_password: str, roles: list = None):
-        self.username = username
-        self.hashed_password = hashed_password
-        self.roles = roles or []
-
-    def verify(self, password: str) -> bool:
-        try:
-            from passlib.context import CryptContext
-
-            ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-            return ctx.verify(password, self.hashed_password)
-        except ImportError:
-            return password == self.hashed_password
+from .auth.users import LocalUser, load_users
 
 
 class GatewayConfig:
@@ -81,9 +65,6 @@ class GatewayConfig:
 
     @classmethod
     def initialize(cls, logger: logging.Logger, setting: Dict[str, Any]) -> None:
-        if not setting:
-            raise RuntimeError("`setting` is required")
-
         with cls._lock:
             if cls._initialized and cls._setting == setting:
                 cls._logger = logger
@@ -180,22 +161,7 @@ class GatewayConfig:
 
     @classmethod
     def _load_users(cls, filepath: str) -> None:
-        import json
-
-        if not os.path.exists(filepath):
-            return
-        try:
-            with open(filepath) as f:
-                users_data = json.load(f)
-            for u in users_data:
-                cls._USERS[u["username"]] = LocalUser(
-                    username=u["username"],
-                    hashed_password=u.get("hashed_password", ""),
-                    roles=u.get("roles", []),
-                )
-        except Exception as e:
-            if cls._logger:
-                cls._logger.warning(f"Failed to load users from {filepath}: {e}")
+        cls._USERS = load_users(filepath)
 
     @classmethod
     def get_logger(cls) -> logging.Logger:
