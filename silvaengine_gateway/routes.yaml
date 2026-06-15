@@ -1,0 +1,42 @@
+# SilvaEngine Gateway — Default Route Manifest
+#
+# This file defines which modules the gateway serves and their routes.
+# The gateway loads this manifest at startup (unless overridden by
+# GATEWAY_ROUTES_CONFIG_JSON or GATEWAY_ROUTES_CONFIG_PATH env vars).
+#
+# To add a module:
+# 1. Install its Python package alongside the gateway
+# 2. Add a module entry below with its routes
+# 3. Restart the gateway — no code changes needed
+#
+# handler_type: graphql | rest | background | task_status
+#   - graphql/rest: execute synchronously in thread pool
+#   - background: submit as background task, return task_id immediately
+#   - task_status: poll task status by task_id
+#
+# dispatch: "package.module:function_name"
+#   - Points directly at the core dispatch function
+#   - Required for graphql, rest, and background handler types
+#   - Optional for task_status (built-in handler)
+
+modules:
+  - name: knowledge_graph_engine
+    package: knowledge_graph_engine
+    transport: graphql
+    routes:
+      - path: "/{endpoint_id}/{part_id}/knowledge_graph_graphql"
+        handler_type: graphql
+        dispatch: "knowledge_graph_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+
+      - path: "/{endpoint_id}/{part_id}/extract"
+        handler_type: background
+        dispatch: "knowledge_graph_engine.main:dispatch_extract"
+        methods: ["POST"]
+        auth: true
+
+      - path: "/{endpoint_id}/{part_id}/extract/status/{task_id}"
+        handler_type: task_status
+        methods: ["GET"]
+        auth: true

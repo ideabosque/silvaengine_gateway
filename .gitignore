@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.vscode/
+.zed
+.claude/
+AGENTS.md
+CLAUDE.md
+knowledge_graph_engine_restructure_development_plan.md

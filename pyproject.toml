@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "silvaengine_gateway"
+version = "0.1.0"
+description = "SilvaEngine Gateway — FastAPI gateway with auth, module routing, and dispatch"
+requires-python = ">=3.10"
+dependencies = [
+    # Core dependency
+    "knowledge_graph_engine",
+    # FastAPI stack
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    # Auth
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "httpx>=0.25.0",
+    # Pydantic (comes with FastAPI)
+    "pydantic>=2.0",
+    # Config
+    "pyyaml>=6.0",
+    # Utils
+    "pendulum>=2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "httpx>=0.25.0",
+    "pytest-cov>=4.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+silvaengine-gateway = "silvaengine_gateway.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["silvaengine_gateway*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: integration tests (requires live DynamoDB + Neo4j)",
+]
+testpaths = ["silvaengine_gateway/tests"]
+pythonpath = ["."]
+
+[tool.gitblame]
+ignore = "tests/.env"
