@@ -3,14 +3,17 @@
 """
 Call the MCP Daemon Engine GraphQL endpoint through the SilvaEngine Gateway.
 
-Tests MCP Daemon GraphQL queries (tools, resources, prompts listing).
+Tests MCP Daemon GraphQL queries (functions, modules, settings, function calls).
 
 Usage:
     # Start the gateway (terminal 1):
     python -m silvaengine_gateway.tests.run_daemon
 
-    # List MCP tools (default):
+    # List MCP functions (default — all types):
     python -m silvaengine_gateway.tests.call_mcp_graphql
+
+    # List tools only:
+    python -m silvaengine_gateway.tests.call_mcp_graphql --query tools
 
     # List resources:
     python -m silvaengine_gateway.tests.call_mcp_graphql --query resources
@@ -18,8 +21,20 @@ Usage:
     # List prompts:
     python -m silvaengine_gateway.tests.call_mcp_graphql --query prompts
 
+    # List modules:
+    python -m silvaengine_gateway.tests.call_mcp_graphql --query modules
+
+    # List settings:
+    python -m silvaengine_gateway.tests.call_mcp_graphql --query settings
+
+    # List function calls:
+    python -m silvaengine_gateway.tests.call_mcp_graphql --query calls
+
+    # Ping:
+    python -m silvaengine_gateway.tests.call_mcp_graphql --query ping
+
     # Raw GraphQL:
-    python -m silvaengine_gateway.tests.call_mcp_graphql --graphql '{"query": "{ mcpTools { name description } }"}'
+    python -m silvaengine_gateway.tests.call_mcp_graphql --graphql '{"query": "{ mcpFunctionList { mcpFunctionList { name description mcpType } } }"}'
 
 All connection params (base_url, endpoint_id, part_id, auth credentials) are
 read from the .env file in the same directory as this script.
@@ -76,6 +91,44 @@ def _promote_editable_finders() -> None:
 _promote_editable_finders()
 
 
+# ── GraphQL field fragments ────────────────────────────────────────
+# These match the Graphene schema in mcp_daemon_engine/schema.py.
+# Graphene auto-converts snake_case to camelCase in the output schema.
+
+_FUNCTION_FIELDS = """
+    name
+    mcpType
+    description
+    moduleName
+    className
+    functionName
+    returnType
+    isAsync
+"""
+
+_FUNCTION_CALL_FIELDS = """
+    mcpFunctionCallUuid
+    mcpType
+    name
+    status
+    timeSpent
+    createdAt
+    updatedAt
+"""
+
+_MODULE_FIELDS = """
+    moduleName
+    packageName
+    source
+    updatedAt
+"""
+
+_SETTING_FIELDS = """
+    settingId
+    updatedAt
+"""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Call MCP Daemon GraphQL through the SilvaEngine Gateway"
@@ -88,9 +141,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--endpoint-id", type=str, default=None)
     parser.add_argument("--part-id", type=str, default=None)
     parser.add_argument(
-        "--query", "-q", type=str, default="tools",
-        choices=["tools", "resources", "prompts", "all"],
-        help="What to query: tools, resources, prompts, or all (default: tools)",
+        "--query", "-q", type=str, default="functions",
+        choices=["functions", "tools", "resources", "prompts", "modules", "settings", "calls", "ping"],
+        help=(
+            "What to query: functions (all types), tools, resources, prompts, "
+            "modules, settings, calls (function-call list), or ping (default: functions)"
+        ),
     )
     parser.add_argument("--graphql", type=str, default=None,
                         help="Raw GraphQL query JSON (overrides --query)")
@@ -106,19 +162,49 @@ def get_token(base_url: str, username: str, password: str) -> str:
 
 
 def build_graphql_payload(args: argparse.Namespace) -> dict:
+    """Build a GraphQL payload from the chosen query type.
+
+    The daemon's Graphene schema exposes these queries:
+      - mcpFunctionList(mcpType, ...) → { mcpFunctionList { mcpFunctionList [...]  } }
+      - mcpModuleList(...)           → { mcpModuleList   { mcpModuleList [...]   } }
+      - mcpSettingList(...)          → { mcpSettingList  { mcpSettingList [...]  } }
+      - mcpFunctionCallList(...)     → { mcpFunctionCallList { mcpFunctionCallList [...] } }
+      - ping                        → String
+    """
     if args.graphql:
         return json.loads(args.graphql)
 
-    fields = []
-    if args.query in ("tools", "all"):
-        fields.append("mcpTools { name description inputSchema }")
-    if args.query in ("resources", "all"):
-        fields.append("mcpResources { name description uri mimeType }")
-    if args.query in ("prompts", "all"):
-        fields.append("mcpPrompts { name description arguments { name description required } }")
+    q = args.query
 
-    query = "{ " + " ".join(fields) + " }"
-    return {"query": query}
+    if q == "ping":
+        return {"query": "{ ping }"}
+
+    if q in ("functions", "tools", "resources", "prompts"):
+        # mcpFunctionList supports optional mcpType filter
+        if q == "functions":
+            query = '{ mcpFunctionList { mcpFunctionList { %s } total pageNumber pageSize } }' % _FUNCTION_FIELDS
+        else:
+            mcp_type = q[:-1]  # tools→tool, resources→resource, prompts→prompt
+            query = (
+                '{ mcpFunctionList(mcpType: "%s") { mcpFunctionList { %s } total pageNumber pageSize } }'
+                % (mcp_type, _FUNCTION_FIELDS)
+            )
+        return {"query": query}
+
+    if q == "modules":
+        query = '{ mcpModuleList { mcpModuleList { %s } total pageNumber pageSize } }' % _MODULE_FIELDS
+        return {"query": query}
+
+    if q == "settings":
+        query = '{ mcpSettingList { mcpSettingList { %s } total pageNumber pageSize } }' % _SETTING_FIELDS
+        return {"query": query}
+
+    if q == "calls":
+        query = '{ mcpFunctionCallList { mcpFunctionCallList { %s } total pageNumber pageSize } }' % _FUNCTION_CALL_FIELDS
+        return {"query": query}
+
+    # Fallback
+    return {"query": "{ ping }"}
 
 
 def main() -> None:
@@ -158,6 +244,8 @@ def main() -> None:
     print(f"\n{'='*60}")
     print(f"  MCP Daemon GraphQL — {args.query}")
     print(f"  URL: {url}")
+    if args.query in ("tools", "resources", "prompts"):
+        print(f"  Filter: mcpType={args.query[:-1]}")
     print(f"{'='*60}\n")
 
     try:
@@ -192,11 +280,29 @@ def main() -> None:
     result = data.get("data", {})
     for key, value in result.items():
         print(f"\n── {key} ──────────────────────────────")
-        if isinstance(value, list):
+        if isinstance(value, dict):
+            # ListObjectType returns { items: [...], total, pageNumber, pageSize }
+            items_key = key  # e.g. "mcpFunctionList" contains "mcpFunctionList" list
+            items = value.get(items_key, value.get("items", []))
+            total = value.get("total", "?")
+            page = value.get("pageNumber", "?")
+            page_size = value.get("pageSize", "?")
+            print(f"  Total: {total} | Page: {page} | PageSize: {page_size}")
+            if isinstance(items, list):
+                for i, item in enumerate(items):
+                    if isinstance(item, dict):
+                        # Compact one-line display for readability
+                        print(f"  [{i+1}] {json.dumps(item, indent=4, ensure_ascii=False)}")
+                    else:
+                        print(f"  [{i+1}] {item}")
+            else:
+                print(f"  {json.dumps(value, indent=2, ensure_ascii=False)}")
+        elif isinstance(value, list):
             for i, item in enumerate(value):
                 print(f"  [{i+1}] {json.dumps(item, indent=4, ensure_ascii=False) if isinstance(item, dict) else item}")
         else:
-            print(f"  {json.dumps(value, indent=2, ensure_ascii=False)}")
+            # Scalar (e.g. ping returns a string)
+            print(f"  {value}")
 
 
 if __name__ == "__main__":

@@ -514,6 +514,11 @@ def build_setting_from_env() -> Dict[str, Any]:
         "neo4j_database": os.getenv("neo4j_database", "neo4j"),
         # Cache
         "cache_enabled": int(os.getenv("cache_enabled", "0")),
+        # MCP Daemon Engine — forwarded to mcp_daemon_engine.handlers.config:Config
+        "transport": os.getenv("MCP_TRANSPORT", "sse"),
+        "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
+        "funct_zip_path": os.getenv("FUNCT_ZIP_PATH"),
+        "funct_extract_path": os.getenv("FUNCT_EXTRACT_PATH"),
         # Shared-store backends (multi-process support)
         "task_backend": os.getenv("GATEWAY_TASK_BACKEND", "memory"),
         "task_table": os.getenv("GATEWAY_TASK_TABLE"),
