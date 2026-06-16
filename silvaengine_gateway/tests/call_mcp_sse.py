@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test the MCP Daemon Engine SSE endpoint through the SilvaEngine Gateway.
+Manual SSE caller for the MCP Daemon route through SilvaEngine Gateway.
 
-Connects to the SSE stream, listens for events, and optionally
-sends a JSON-RPC message via the SSE POST endpoint.
+This mirrors the SSE coverage in test_mcp_e2e.py:
+    - test_16_sse_post_tools_call_search_customers
+    - test_29_sse_get_connect
+    - test_30_sse_post_initialize
+    - test_31_sse_post_tools_list
+
+The gateway exposes the same /sse path for streaming GET requests and JSON-RPC
+POST messages. Use --send to exercise the POST path, then the script opens the
+stream so you can inspect connected and heartbeat events.
 
 Usage:
     # Start the gateway (terminal 1):
@@ -22,7 +29,11 @@ Usage:
     # Send a tools/list request:
     python -m silvaengine_gateway.tests.call_mcp_sse --send tools/list
 
-All connection params are read from the .env file.
+    # Call the ResolvePay search_customers tool used by test_mcp_e2e.py:
+    python -m silvaengine_gateway.tests.call_mcp_sse --send tools/call --params '{"name":"search_customers","arguments":{"business_ap_email":"bibo72@outlook.com"}}'
+
+Connection defaults match test_mcp_e2e.py: BASE_URL=http://localhost:8765,
+endpoint_id=gpt, part_id=nestaging. Values can be overridden by .env or CLI.
 """
 
 from __future__ import print_function
@@ -33,7 +44,6 @@ import argparse
 import json
 import os
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -81,7 +91,10 @@ _promote_editable_finders()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Test MCP SSE endpoint through the SilvaEngine Gateway"
+        description=(
+            "Call the MCP SSE endpoint through SilvaEngine Gateway "
+            "(manual companion to test_mcp_e2e.py)"
+        )
     )
     parser.add_argument("--base-url", type=str, default=None)
     parser.add_argument("--dotenv", type=str, default=None)
@@ -102,8 +115,17 @@ def parse_args() -> argparse.Namespace:
         "-s",
         type=str,
         default=None,
-        choices=["initialize", "tools/list", "resources/list", "prompts/list"],
-        help="Send a JSON-RPC message after connecting",
+        help=(
+            "JSON-RPC method to POST to /sse before listening "
+            "(for example: initialize, tools/list, tools/call)"
+        ),
+    )
+    parser.add_argument(
+        "--params",
+        "-p",
+        type=str,
+        default=None,
+        help="JSON-RPC params as a JSON string for --send",
     )
     parser.add_argument(
         "--raw", action="store_true", help="Print raw SSE events without formatting"
@@ -140,11 +162,16 @@ def listen_sse(
     print(f"{'='*60}\n")
 
     try:
+        deadline = time.monotonic() + timeout
         resp = requests.get(url, headers=headers, stream=True, timeout=timeout + 5)
         resp.raise_for_status()
 
         event_type = None
         for line in resp.iter_lines(decode_unicode=True):
+            if time.monotonic() >= deadline:
+                print(f"\n  SSE stream timed out after {timeout}s (this is normal)")
+                break
+
             if line is None:
                 continue
 
@@ -189,7 +216,13 @@ def listen_sse(
 
 
 def send_message(
-    base_url: str, endpoint_id: str, part_id: str, token: str, method: str, raw: bool
+    base_url: str,
+    endpoint_id: str,
+    part_id: str,
+    token: str,
+    method: str,
+    params: dict,
+    raw: bool,
 ) -> None:
     """Send a JSON-RPC message via the SSE POST endpoint."""
     sse_post_path = f"/{endpoint_id}/{part_id}/sse"
@@ -200,6 +233,8 @@ def send_message(
         "method": method,
         "id": 1,
     }
+    if params:
+        payload["params"] = params
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -207,11 +242,11 @@ def send_message(
         "Part-Id": part_id,
     }
 
-    print(f"\n  📤 Sending: {method}")
+    print(f"\n  Sending: {method}")
     print(f"     POST {url}")
 
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        resp = requests.post(url, json=payload, headers=headers, timeout=60)
         print(f"  Status: {resp.status_code}")
         if raw:
             print(f"  Response: {resp.text[:500]}")
@@ -238,8 +273,8 @@ def main() -> None:
         print(f"Loaded .env from: {env_file}")
 
     base_url = args.base_url or os.getenv("BASE_URL", "http://localhost:8765")
-    endpoint_id = args.endpoint_id or os.getenv("endpoint_id", "test-ep")
-    part_id = args.part_id or os.getenv("part_id", "test-part")
+    endpoint_id = args.endpoint_id or os.getenv("endpoint_id", "gpt")
+    part_id = args.part_id or os.getenv("part_id", "nestaging")
 
     if args.token:
         token = args.token
@@ -249,9 +284,12 @@ def main() -> None:
         print(f"Authenticating as {username}...")
         token = get_token(base_url, username, password)
 
-    # If sending a message, do it in a separate thread before listening
+    # Match test_mcp_e2e.py: POST the JSON-RPC message to /sse, then open GET /sse.
     if args.send:
-        send_message(base_url, endpoint_id, part_id, token, args.send, args.raw)
+        params = json.loads(args.params) if args.params else {}
+        send_message(
+            base_url, endpoint_id, part_id, token, args.send, params, args.raw
+        )
         print()
 
     # Always listen to SSE stream

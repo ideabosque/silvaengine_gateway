@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Call the MCP Daemon Engine GraphQL endpoint through the SilvaEngine Gateway.
+Manual GraphQL caller for the MCP Daemon route through SilvaEngine Gateway.
 
-Tests MCP Daemon GraphQL queries (functions, modules, settings, function calls).
+This mirrors the GraphQL query coverage in test_mcp_e2e.py:
+    - test_06_graphql_ping
+    - test_07_graphql_function_list_all
+    - test_08_graphql_function_list_tools
+    - test_09_graphql_function_list_resources
+    - test_10_graphql_function_list_prompts
+    - test_11_graphql_module_list
+    - test_12_graphql_setting_list
+    - test_13_graphql_function_call_list
+    - test_32_graphql_raw_query
 
 Usage:
     # Start the gateway (terminal 1):
     python -m silvaengine_gateway.tests.run_daemon
 
-    # List MCP functions (default — all types):
+    # List MCP functions (default, all MCP types):
     python -m silvaengine_gateway.tests.call_mcp_graphql
 
     # List tools only:
@@ -36,8 +45,8 @@ Usage:
     # Raw GraphQL:
     python -m silvaengine_gateway.tests.call_mcp_graphql --graphql '{"query": "{ mcpFunctionList { mcpFunctionList { name description mcpType } } }"}'
 
-All connection params (base_url, endpoint_id, part_id, auth credentials) are
-read from the .env file in the same directory as this script.
+Connection defaults match test_mcp_e2e.py: BASE_URL=http://localhost:8765,
+endpoint_id=gpt, part_id=nestaging. Values can be overridden by .env or CLI.
 """
 
 from __future__ import print_function
@@ -137,7 +146,10 @@ _SETTING_FIELDS = """
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Call MCP Daemon GraphQL through the SilvaEngine Gateway"
+        description=(
+            "Call the MCP GraphQL endpoint through SilvaEngine Gateway "
+            "(manual companion to test_mcp_e2e.py)"
+        )
     )
     parser.add_argument("--base-url", type=str, default=None)
     parser.add_argument("--dotenv", type=str, default=None)
@@ -257,8 +269,8 @@ def main() -> None:
         print(f"Loaded .env from: {env_file}")
 
     base_url = args.base_url or os.getenv("BASE_URL", "http://localhost:8765")
-    endpoint_id = args.endpoint_id or os.getenv("endpoint_id", "test-ep")
-    part_id = args.part_id or os.getenv("part_id", "test-part")
+    endpoint_id = args.endpoint_id or os.getenv("endpoint_id", "gpt")
+    part_id = args.part_id or os.getenv("part_id", "nestaging")
 
     # Authenticate
     if args.token:

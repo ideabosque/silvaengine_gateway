@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Call the MCP Daemon Engine REST (JSON-RPC) endpoint through the SilvaEngine Gateway.
+Manual REST/JSON-RPC caller for the MCP Daemon route through SilvaEngine Gateway.
 
-Tests MCP JSON-RPC messages: initialize, tools/list, resources/list, prompts/list,
-and tool calls.
+This mirrors the REST coverage in test_mcp_e2e.py:
+    - test_15_rest_tool_call_search_customers
+    - test_25_rest_initialize
+    - test_26_rest_tools_list
+    - test_27_rest_tools_list_has_schemas
+    - test_28_rest_mcp_info
 
 Usage:
     # Start the gateway (terminal 1):
@@ -16,13 +20,17 @@ Usage:
     # List tools:
     python -m silvaengine_gateway.tests.call_mcp_rest --method tools/list
 
-    # Call a tool:
-    python -m silvaengine_gateway.tests.call_mcp_rest --method tools/call --params '{"name":"my_tool","arguments":{}}'
+    # Read the MCP configuration summary used by test_28_rest_mcp_info:
+    python -m silvaengine_gateway.tests.call_mcp_rest --mcp-info
+
+    # Call the ResolvePay search_customers tool used by test_mcp_e2e.py:
+    python -m silvaengine_gateway.tests.call_mcp_rest --method tools/call --params '{"name":"search_customers","arguments":{"business_ap_email":"bibo72@outlook.com"}}'
 
     # Raw JSON-RPC:
     python -m silvaengine_gateway.tests.call_mcp_rest --raw-json '{"jsonrpc":"2.0","method":"initialize","id":1}'
 
-All connection params are read from the .env file.
+Connection defaults match test_mcp_e2e.py: BASE_URL=http://localhost:8765,
+endpoint_id=gpt, part_id=nestaging. Values can be overridden by .env or CLI.
 """
 
 from __future__ import print_function
@@ -79,7 +87,10 @@ _promote_editable_finders()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Call MCP JSON-RPC REST endpoint through the SilvaEngine Gateway"
+        description=(
+            "Call the MCP REST/JSON-RPC endpoint through SilvaEngine Gateway "
+            "(manual companion to test_mcp_e2e.py)"
+        )
     )
     parser.add_argument("--base-url", type=str, default=None)
     parser.add_argument("--dotenv", type=str, default=None)
@@ -103,6 +114,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Raw JSON-RPC message (overrides --method/--params)",
+    )
+    parser.add_argument(
+        "--mcp-info",
+        action="store_true",
+        help="GET /mcp_info instead of POSTing a JSON-RPC message",
     )
     parser.add_argument(
         "--raw", action="store_true", help="Print raw JSON response without formatting"
@@ -131,8 +147,8 @@ def main() -> None:
         print(f"Loaded .env from: {env_file}")
 
     base_url = args.base_url or os.getenv("BASE_URL", "http://localhost:8765")
-    endpoint_id = args.endpoint_id or os.getenv("endpoint_id", "test-ep")
-    part_id = args.part_id or os.getenv("part_id", "test-part")
+    endpoint_id = args.endpoint_id or os.getenv("endpoint_id", "gpt")
+    part_id = args.part_id or os.getenv("part_id", "nestaging")
 
     if args.token:
         token = args.token
@@ -141,6 +157,38 @@ def main() -> None:
         password = args.password or os.getenv("ADMIN_PASSWORD", "admin123")
         print(f"Authenticating as {username}...")
         token = get_token(base_url, username, password)
+
+    if args.mcp_info:
+        info_path = f"/{endpoint_id}/{part_id}/mcp_info"
+        url = f"{base_url}{info_path}"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        print(f"\n{'='*60}")
+        print("  MCP configuration summary")
+        print(f"  URL: {url}")
+        print(f"{'='*60}\n")
+
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+        except requests.ConnectionError:
+            print(f"ERROR: Cannot connect to {base_url}")
+            print("Start the gateway with: python -m silvaengine_gateway.tests.run_daemon")
+            sys.exit(1)
+
+        if args.raw:
+            print(resp.text)
+            return
+
+        try:
+            data = resp.json()
+        except json.JSONDecodeError:
+            print(f"Status: {resp.status_code}")
+            print(f"Response (non-JSON): {resp.text[:2000]}")
+            return
+
+        print(f"Status: {resp.status_code}")
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
 
     # Build JSON-RPC payload
     if args.raw_json:
