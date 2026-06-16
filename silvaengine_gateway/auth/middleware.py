@@ -22,8 +22,21 @@ class FlexJWTMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.public_paths: List[str] = list(public_paths) + ["/auth"]
 
+    def _is_public(self, path: str) -> bool:
+        """Match a public path on segment boundaries.
+
+        ``startswith`` alone would treat ``/authenticate`` as public because it
+        begins with ``/auth``, and would let an ``endpoint_id`` named ``health``
+        or ``auth`` bypass authentication. Require an exact match or a path
+        separator at the boundary.
+        """
+        for p in self.public_paths:
+            if path == p or path.startswith(p + "/"):
+                return True
+        return False
+
     async def dispatch(self, request: Request, call_next):
-        if any(request.url.path.startswith(p) for p in self.public_paths):
+        if self._is_public(request.url.path):
             return await call_next(request)
 
         auth = request.headers.get("authorization")

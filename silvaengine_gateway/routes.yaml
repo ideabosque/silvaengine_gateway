@@ -4,12 +4,18 @@
 # (e.g. "package.module:dispatch_graphql"). The gateway resolves it
 # via importlib and wraps it with the appropriate handler factory.
 #
-# handler_type: graphql | rest | background | task_status
+# handler_type: graphql | rest | background | task_status | sse
 # dispatch: "package.module:function_name"
 #
 # config_class: "package.module:ClassName" — auto-initialize at startup
 # config_init_style: "dict" (Config.initialize(logger, setting))
 #                    "kwargs" (Config.initialize(logger, **setting))
+#
+# on_shutdown: "package.module:function" — called during lifespan shutdown
+# sse_manager: "package.module:instance" — SSE manager for handler_type: sse
+# exception_handlers:
+#   - exception_class: "package.module:ExceptionClass"
+#     status_code: 401
 
 modules:
   # ── Knowledge Graph Engine ────────────────────────────────────────────
@@ -47,4 +53,85 @@ modules:
         handler_type: graphql
         dispatch: "ai_rfq_engine.main:dispatch_graphql"
         methods: ["POST"]
+        auth: true
+
+  # ── MCP Daemon Engine ────────────────────────────────────────────────
+  - name: mcp_daemon_engine
+    package: mcp_daemon_engine
+    transport: hybrid
+    config_class: "mcp_daemon_engine.handlers.config:Config"
+    config_init_style: dict
+    on_shutdown: "mcp_daemon_engine.handlers.sse_manager:cleanup_sse"
+    sse_manager: "mcp_daemon_engine.handlers.sse_manager:sse_manager"
+    exception_handlers:
+      - exception_class: "mcp_daemon_engine.utils.exceptions:AuthenticationError"
+        status_code: 401
+      - exception_class: "mcp_daemon_engine.utils.exceptions:TokenExpiredError"
+        status_code: 401
+      - exception_class: "mcp_daemon_engine.utils.exceptions:InvalidRequestError"
+        status_code: 400
+      - exception_class: "mcp_daemon_engine.utils.exceptions:RateLimitExceeded"
+        status_code: 429
+      - exception_class: "mcp_daemon_engine.utils.exceptions:MCPDaemonError"
+        status_code: 500
+    routes:
+      # GraphQL — MCP daemon queries/mutations
+      - path: "/{endpoint_id}/{part_id}/mcp_daemon_graphql"
+        handler_type: graphql
+        dispatch: "mcp_daemon_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+
+      # REST — MCP JSON-RPC (no SSE broadcast)
+      - path: "/{endpoint_id}/{part_id}/mcp"
+        handler_type: rest
+        dispatch: "mcp_daemon_engine.main:dispatch_mcp"
+        methods: ["POST"]
+        auth: true
+
+      # SSE stream (GET) — long-lived SSE connection
+      - path: "/{endpoint_id}/{part_id}/sse"
+        handler_type: sse
+        methods: ["GET"]
+        auth: true
+
+      # SSE POST — JSON-RPC message + SSE push to connected clients
+      - path: "/{endpoint_id}/{part_id}/sse"
+        handler_type: rest
+        dispatch: "mcp_daemon_engine.main:dispatch_sse_message"
+        methods: ["POST"]
+        auth: true
+
+      # Background — async tool execution
+      - path: "/{endpoint_id}/{part_id}/mcp_async_execute"
+        handler_type: background
+        dispatch: "mcp_daemon_engine.main:dispatch_mcp_async"
+        methods: ["POST"]
+        auth: true
+
+      # Task status
+      - path: "/{endpoint_id}/{part_id}/mcp_async/status/{task_id}"
+        handler_type: task_status
+        methods: ["GET"]
+        auth: true
+
+      # Admin — cache refresh
+      - path: "/{endpoint_id}/{part_id}/admin/cache/refresh"
+        handler_type: rest
+        dispatch: "mcp_daemon_engine.main:dispatch_cache_refresh"
+        methods: ["POST"]
+        auth: true
+
+      # Admin — cache clear (specific partition)
+      - path: "/{endpoint_id}/{part_id}/admin/cache"
+        handler_type: rest
+        dispatch: "mcp_daemon_engine.main:dispatch_cache_clear"
+        methods: ["DELETE"]
+        auth: true
+
+      # Endpoint info
+      - path: "/{endpoint_id}/{part_id}/mcp_info"
+        handler_type: rest
+        dispatch: "mcp_daemon_engine.main:dispatch_mcp_info"
+        methods: ["GET"]
         auth: true

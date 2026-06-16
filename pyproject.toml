@@ -11,6 +11,7 @@ dependencies = [
     # Core dependencies
     "knowledge_graph_engine",
     "ai_rfq_engine",
+    "mcp-daemon-engine",
     # FastAPI stack
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",

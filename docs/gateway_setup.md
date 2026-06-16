@@ -1,161 +1,185 @@
 # Gateway Setup Guide
 
-## Local Setup
+## Quick Start
 
 ```powershell
+# Install the gateway
 python -m pip install -e ".[dev]"
-Copy-Item silvaengine_gateway/tests/.env.example silvaengine_gateway/tests/.env
-```
 
-Fill in the required authentication and service settings, then run:
+# Configure authentication (minimum required)
+$env:ADMIN_USERNAME = "admin"
+$env:ADMIN_PASSWORD = "change-me"
+$env:JWT_SECRET_KEY = "replace-with-a-random-secret"
 
-```powershell
+# Start the gateway
 python -m silvaengine_gateway
 ```
 
-Do not commit `silvaengine_gateway/tests/.env`; it may contain credentials.
-
-## Local JWT
-
-Local JWT is the default authentication provider.
-
-```text
-GATEWAY_AUTH_PROVIDER=local
-JWT_SECRET_KEY=<random-secret>
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=<strong-password>
-```
-
-Request a token with OAuth2 form data:
+The default server listens on `0.0.0.0:8000`.
 
 ```powershell
-$token = (Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8000/auth/token `
-  -ContentType "application/x-www-form-urlencoded" `
-  -Body "username=admin&password=<strong-password>").access_token
+# Verify it's running
+Invoke-RestMethod http://localhost:8000/health
 ```
 
-## AWS Cognito
+## Environment Variables
 
-Set `GATEWAY_AUTH_PROVIDER=cognito` and configure:
+See the main [README.md](../README.md) for the full configuration reference.
 
-- `COGNITO_USER_POOL_ID`
-- `COGNITO_APP_CLIENT_ID`
-- `COGNITO_APP_SECRET`
-- `region_name`
+Key variables:
 
-The JWKS URL is derived from the region and user-pool ID unless
-`COGNITO_JWKS_URL` is set. Username/password login also requires a configured
-Cognito Identity Provider client, which the gateway creates when AWS
-credentials are supplied.
+| Variable | Default | Purpose |
+|---|---|---|
+| `GATEWAY_AUTH_PROVIDER` | `local` | `local` or `cognito` |
+| `JWT_SECRET_KEY` | `CHANGEME` | Local JWT signing secret |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | empty | Local admin credentials |
+| `GATEWAY_PORT` | `8000` | Bind port |
+| `GATEWAY_ROUTES_CONFIG_PATH` | packaged `routes.yaml` | Custom manifest path |
+| `GATEWAY_ROUTES_CONFIG_JSON` | empty | Inline JSON manifest |
+| `GATEWAY_WORKERS` | `1` | Uvicorn worker processes |
+| `GATEWAY_TASK_BACKEND` | `memory` | `memory` or `dynamodb` (background task state) |
+| `GATEWAY_TASK_TABLE` | `silvaengine-gateway-tasks` | DynamoDB task table (hash key `task_id`) |
+| `GATEWAY_TASK_TTL` | `3600` | Task state TTL in seconds |
+| `GATEWAY_RATE_LIMIT_BACKEND` | `memory` | `memory` or `dynamodb` (rate-limit counters) |
+| `GATEWAY_RATE_LIMIT_TABLE` | `silvaengine-gateway-ratelimit` | DynamoDB table (hash key `rl_key`) |
 
-## Calling Module Routes
+## Scaling & Multi-Process
 
-Protected module routes require both a bearer token and `Part-Id`:
+By default the gateway runs a **single** uvicorn process and keeps task state,
+rate-limit counters, and the SSE client registry in memory. Set
+`GATEWAY_WORKERS > 1` to run multiple worker processes — but in-memory state is
+**not shared** across processes, so switch the affected stores to a shared
+backend:
 
-### Knowledge Graph Engine
+| Concern | Single process | `workers > 1` |
+|---|---|---|
+| Background task status | in-memory (default) | set `GATEWAY_TASK_BACKEND=dynamodb` so a poll on any worker sees the result |
+| Rate limiting | in-memory (per-process; effective limit × workers) | set `GATEWAY_RATE_LIMIT_BACKEND=dynamodb` for a shared fixed-window counter |
+| SSE streaming | in-memory registry (works) | requires **sticky sessions** so a client's `GET /sse` stream and its `POST /sse` land on the same worker; cross-user broadcast across workers needs a pub/sub backplane (e.g. Redis) — not provided |
 
-```powershell
-Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8000/demo/acme/knowledge_graph_graphql `
-  -Headers @{
-    Authorization = "Bearer $token"
-    "Part-Id" = "acme"
-  } `
-  -ContentType "application/json" `
-  -Body '{"query":"{ __schema { queryType { name } } }"}'
-```
+The DynamoDB tables need:
 
-### AI RFQ Engine
+- **tasks**: string hash key `task_id`; enable TTL on the `expires_at` attribute.
+- **rate limit**: string hash key `rl_key`; enable TTL on the `expires_at` attribute.
 
-```powershell
-Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8000/demo/acme/ai_rfq_graphql `
-  -Headers @{
-    Authorization = "Bearer $token"
-    "Part-Id" = "acme"
-  } `
-  -ContentType "application/json" `
-  -Body '{"query":"{ __schema { queryType { name } } }"}'
-```
+AWS credentials are taken from the standard `region_name` /
+`aws_access_key_id` / `aws_secret_access_key` settings. On startup the gateway
+logs the selected backends and warns when `workers > 1` is combined with an
+in-memory store.
 
-## Route Configuration
+## Route Manifest
 
-Use `GATEWAY_ROUTES_CONFIG_PATH` for a deployment-owned YAML or JSON file, or
-`GATEWAY_ROUTES_CONFIG_JSON` for an inline JSON array. The schema is documented
-in the project README and demonstrated by
-`silvaengine_gateway/routes.yaml`.
+The gateway reads `routes.yaml` (or a JSON override) to discover modules,
+dispatch routes, and configuration. **Adding a module = editing routes.yaml,
+zero Python changes.**
+
+### Module Fields
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Module identifier |
+| `package` | Yes | Python package to import |
+| `transport` | No | `graphql` (default), `rest`, or `hybrid` |
+| `config_class` | No | `"pkg.module:Config"` — auto-initialized at startup |
+| `config_init_style` | No | `dict` (default) or `kwargs` |
+| `config_exclude_keys` | No | Gateway-only keys to strip (defaults apply) |
+| `on_shutdown` | No | `"pkg.module:cleanup_fn"` — called on shutdown |
+| `sse_manager` | No | `"pkg.module:sse_manager"` — for `handler_type: sse` |
+| `exception_handlers` | No | List of `{exception_class, status_code}` |
+
+### Route Fields
+
+| Field | Required | Description |
+|---|---|---|
+| `path` | Yes | URL path template |
+| `handler_type` | No | `graphql`, `rest`, `background`, `task_status`, `sse` |
+| `dispatch` | Yes* | `"pkg.module:function"` — required except for `task_status` and `sse` |
+| `methods` | No | HTTP methods (default: `["POST"]`) |
+| `auth` | No | Require auth (default: `true`) |
 
 ### Adding a New Module
 
-To register a new module, add an entry to the route manifest. No gateway Python
-code changes are needed.
+1. Add a module entry to `routes.yaml`
+2. The module must provide:
+   - **Config class** with `initialize(logger, setting)` or `initialize(logger, **setting)`, matching the module's `config_init_style`
+   - **Dispatch functions** (e.g. `dispatch_graphql(**params)`)
+   - **Domain exceptions** (optional) — registered via `exception_handlers`
+   - **Lifecycle hooks** (optional) — `on_shutdown` for cleanup
+   - **SSE manager** (optional) — for `handler_type: sse`
+
+Example:
 
 ```yaml
-modules:
   - name: my_new_module
     package: my_new_module
     transport: graphql
     config_class: "my_new_module.handlers.config:Config"
     config_init_style: dict
+    on_shutdown: "my_new_module.handlers.lifecycle:cleanup"
+    exception_handlers:
+      - exception_class: "my_new_module.exceptions:AuthenticationError"
+        status_code: 401
     routes:
-      - path: "/{endpoint_id}/{part_id}/my_new_graphql"
+      - path: "/{endpoint_id}/{part_id}/my_graphql"
         handler_type: graphql
         dispatch: "my_new_module.main:dispatch_graphql"
         methods: ["POST"]
         auth: true
 ```
 
-**Prerequisites for the module package:**
+### Config Auto-Initialization
 
-1. A `Config` class with `initialize(logger, setting)` and `get_logger()` /
-   `get_setting()` class methods
-2. A `dispatch_graphql(**params)` function (or similar) that creates a
-   short-lived engine instance using `Config.get_logger()` and
-   `Config.get_setting()`
+When `config_class` is set, the gateway:
 
-**Config auto-initialization:** When `config_class` is declared, the gateway
-resolves it at startup, filters out gateway-only keys (auth, server, routing),
-and calls `Config.initialize(logger, setting)` before any requests are served.
+1. Resolves the class via `importlib`
+2. Strips `config_exclude_keys` from the settings
+3. Calls `Config.initialize(logger, setting)` (or `Config.initialize(logger, **setting)` if `config_init_style: kwargs`)
 
-Custom dispatch paths are imported into the gateway process. Only use manifests
-controlled by the deployment owner.
+No hard-coded `_init_xxx_config()` functions needed in `app.py`.
 
-## Task State
+### Domain Exception Handlers
 
-The default task backend is in memory and supports only a single process. A
-shared deployment must provide a durable `TaskBackend` implementation and
-install it before requests are served:
+Modules register domain exception → HTTP status code mappings in the manifest:
 
-```python
-from silvaengine_gateway.tasks import TaskBackend, set_task_backend
-
-
-class DynamoDBTaskBackend(TaskBackend):
-    def create(self, task_id, meta):
-        ...
-
-    def get(self, task_id):
-        ...
-
-    def update(self, task_id, status, **fields):
-        ...
-
-    def delete(self, task_id):
-        ...
-
-
-set_task_backend(DynamoDBTaskBackend())
+```yaml
+exception_handlers:
+  - exception_class: "mcp_daemon_engine.utils.exceptions:AuthenticationError"
+    status_code: 401
+  - exception_class: "mcp_daemon_engine.utils.exceptions:InvalidRequestError"
+    status_code: 400
 ```
 
-## Deployment Notes
+The gateway resolves each class and registers a FastAPI exception handler.
+Modules not installed are skipped with a warning.
 
-The current `python -m silvaengine_gateway` entry point starts one Uvicorn
-process. For ECS/Fargate, run one process per container unless a shared task
-backend and an external multi-worker launch strategy are configured.
+### Lifecycle Hooks
 
-Lambda deployments should use `knowledge_graph_engine` or `ai_rfq_engine`
-directly; this FastAPI gateway is intended for long-running HTTP services.
+- **`on_shutdown`**: Async or sync function called during FastAPI lifespan shutdown.
+  Used for cleanup (e.g. `sse_manager.cleanup_all()`).
+
+### Cross-Module Function Routing
+
+`functs_on_local` is built automatically from the manifest — each module with a
+`config_class` and a `graphql` route gets an entry. Env var overrides:
+`FUNCTS_{NAME}_CLASS` for class name, `FUNCTS_ON_LOCAL_OVERRIDES` (JSON) for
+additions.
+
+## Test Scripts
+
+| Script | Purpose |
+|---|---|
+| `call_search.py` | Test KGE search (text2cypher, vector, hybrid) |
+| `call_inquire_catalog.py` | Test AI RFQ Engine inquireCatalog |
+| `call_mcp_graphql.py` | Test MCP Daemon GraphQL |
+| `call_mcp_rest.py` | Test MCP JSON-RPC REST |
+| `call_mcp_sse.py` | Test SSE stream + message posting |
+
+## MCP Daemon Engine Integration
+
+The MCP Daemon Engine is fully integrated through the manifest:
+
+- **9 routes** (GraphQL, REST, SSE, background, cache admin, info)
+- **Domain exceptions** mapped to HTTP 401/400/429
+- **SSE manager** resolved from `mcp_daemon_engine.handlers.sse_manager:sse_manager`
+- **Shutdown hook** calls `cleanup_sse()` to disconnect all SSE clients
+- **Config init** uses `dict` style: `Config.initialize(logger, setting)`

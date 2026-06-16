@@ -11,23 +11,27 @@ changes, zero gateway Python code.
 - Public health check and authenticated user-claims endpoint
 - YAML or JSON route manifests with dynamic dispatch imports
 - **Auto-initialization of module Config classes** from manifest `config_class` declarations
+- **Manifest-driven exception handlers** — register domain exceptions → HTTP status codes
+- **Manifest-driven lifecycle hooks** — `on_startup` / `on_shutdown` per module
+- **Manifest-driven SSE** — `sse_manager` resolves the SSE manager per module
 - Per-IP in-memory rate limiting
 - Thread-pool execution for synchronous dispatch functions
 - Pluggable task-state backend, with an in-memory default
 
 ## Registered Modules
 
-| Module | Package | Config Init Style | Route |
+| Module | Package | Config Init | Routes |
 |---|---|---|---|
-| Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | `POST /{endpoint_id}/{part_id}/knowledge_graph_graphql` |
-| Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | `POST /{endpoint_id}/{part_id}/extract` |
-| Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | `GET /{endpoint_id}/{part_id}/extract/status/{task_id}` |
-| AI RFQ Engine | `ai_rfq_engine` | `dict` | `POST /{endpoint_id}/{part_id}/ai_rfq_graphql` |
+| Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | GraphQL, Extract, Extract Status |
+| AI RFQ Engine | `ai_rfq_engine` | `dict` | GraphQL |
+| MCP Daemon Engine | `mcp_daemon_engine` | `dict` | GraphQL, REST, SSE, Background, Cache Admin, Info |
 
 ## Requirements
 
 - Python 3.10 or later
-- The `knowledge_graph_engine` and `ai_rfq_engine` packages and their service dependencies
+- The `knowledge_graph_engine`, `ai_rfq_engine`, and `mcp_daemon_engine` packages
+  (the gateway starts gracefully without any module installed — unresolvable
+  imports are logged as warnings)
 - DynamoDB, Neo4j, and model-provider configuration when exercising KGE routes
 - DynamoDB and model-provider configuration when exercising AI RFQ Engine routes
 
@@ -50,7 +54,7 @@ Invoke-RestMethod http://localhost:8000/health
 ## Authentication
 
 `POST /auth/token` accepts OAuth2 form fields (`username` and `password`).
-Protected routes require `Authorization: Bearer ***`
+Protected routes require `Authorization: Bearer <token>`.
 
 Local authentication supports either:
 
@@ -62,19 +66,28 @@ The default `JWT_SECRET_KEY=CHANGEME` is for development only.
 
 ## Default Routes
 
-| Method | Path | Authentication | Purpose |
-|---|---|---:|---|
+| Method | Path | Auth | Purpose |
+|---|---|:---:|---|
 | `GET` | `/health` | No | Service health |
 | `POST` | `/auth/token` | No | Obtain a local or Cognito access token |
 | `GET` | `/me` | Yes | Return authenticated claims |
-| `POST` | `/{endpoint_id}/{part_id}/knowledge_graph_graphql` | Yes | Execute KGE GraphQL |
-| `POST` | `/{endpoint_id}/{part_id}/extract` | Yes | Submit KGE extraction |
-| `GET` | `/{endpoint_id}/{part_id}/extract/status/{task_id}` | Yes | Poll extraction status |
-| `POST` | `/{endpoint_id}/{part_id}/ai_rfq_graphql` | Yes | Execute AI RFQ Engine GraphQL |
+| `POST` | `/{ep}/{part}/knowledge_graph_graphql` | Yes | KGE GraphQL |
+| `POST` | `/{ep}/{part}/extract` | Yes | KGE extraction |
+| `GET` | `/{ep}/{part}/extract/status/{task_id}` | Yes | Poll extraction status |
+| `POST` | `/{ep}/{part}/ai_rfq_graphql` | Yes | AI RFQ Engine GraphQL |
+| `POST` | `/{ep}/{part}/mcp_daemon_graphql` | Yes | MCP Daemon GraphQL |
+| `POST` | `/{ep}/{part}/mcp` | Yes | MCP JSON-RPC |
+| `GET` | `/{ep}/{part}/sse` | Yes | MCP SSE stream |
+| `POST` | `/{ep}/{part}/sse` | Yes | MCP SSE message |
+| `POST` | `/{ep}/{part}/mcp_async_execute` | Yes | MCP async tool execution |
+| `GET` | `/{ep}/{part}/mcp_async/status/{task_id}` | Yes | MCP task status |
+| `POST` | `/{ep}/{part}/admin/cache/refresh` | Yes | MCP cache refresh |
+| `DELETE` | `/{ep}/{part}/admin/cache` | Yes | MCP cache clear |
+| `GET` | `/{ep}/{part}/mcp_info` | Yes | MCP endpoint info |
 
-All module dispatch routes require a `Part-Id` header. The gateway builds
-`partition_key` as `<endpoint_id>#<Part-Id>` and passes it to the core dispatch
-function.
+Module dispatch routes build `partition_key` from the route path as
+`<endpoint_id>#<part_id>`. The `Part-Id` header remains accepted as a
+compatibility fallback for older callers.
 
 ## Route Manifest
 
@@ -98,9 +111,15 @@ modules:
     transport: graphql                  # "graphql" | "rest" | "hybrid"
     config_class: "my_module.handlers.config:Config"  # auto-init at startup
     config_init_style: dict             # "dict" → Config.initialize(logger, setting)
+    config_exclude_keys: [...]          # optional override
+    on_shutdown: "my_module.handlers.lifecycle:cleanup"  # async or sync
+    sse_manager: "my_module.handlers.sse_manager:sse_manager"
+    exception_handlers:
+      - exception_class: "my_module.exceptions:AuthenticationError"
+        status_code: 401
     routes:
       - path: "/{endpoint_id}/{part_id}/my_graphql"
-        handler_type: graphql           # "graphql" | "rest" | "background" | "task_status"
+        handler_type: graphql
         dispatch: "my_module.main:dispatch_graphql"
         methods: ["POST"]
         auth: true
@@ -113,9 +132,12 @@ modules:
 | `name` | Yes | Module identifier (used for logging) |
 | `package` | Yes | Python package to import |
 | `transport` | No | `graphql` (default), `rest`, or `hybrid` |
-| `config_class` | No | Dotted path to Config class (e.g. `pkg.module:Class`). If set, `Config.initialize()` is called at gateway startup with filtered settings. |
+| `config_class` | No | Dotted path to Config class. If set, `Config.initialize()` is called at startup. |
 | `config_init_style` | No | `dict` (default) → `Config.initialize(logger, setting_dict)`. Use `kwargs` for `Config.initialize(logger, **setting_dict)`. |
-| `config_exclude_keys` | No | Gateway-only keys to strip before passing to Config (defaults to auth, server, and routes keys) |
+| `config_exclude_keys` | No | Gateway-only keys to strip before passing to Config |
+| `on_shutdown` | No | Dotted path to async/sync cleanup function, called during FastAPI lifespan shutdown |
+| `sse_manager` | No | Dotted path to SSE manager instance for `handler_type: sse` routes |
+| `exception_handlers` | No | List of `{exception_class, status_code}` pairs. Gateway registers FastAPI exception handlers for each. |
 | `routes` | Yes | List of route specifications |
 
 **Route fields:**
@@ -123,27 +145,24 @@ modules:
 | Field | Required | Description |
 |---|---|---|
 | `path` | Yes | URL path template |
-| `handler_type` | No | `graphql` (default), `rest`, `background`, or `task_status` |
-| `dispatch` | Yes* | Dotted path to dispatch function (`pkg.module:function`). Required for `graphql`, `rest`, `background`. |
+| `handler_type` | No | `graphql` (default), `rest`, `background`, `task_status`, or `sse` |
+| `dispatch` | Yes* | Dotted path to dispatch function. Required for `graphql`, `rest`, `background`. |
 | `methods` | No | HTTP methods (default: `["POST"]`) |
 | `auth` | No | Require authentication (default: `true`) |
 
-\* `task_status` routes use a built-in handler and do not need `dispatch`.
+\* `task_status` and `sse` routes use built-in handlers and do not need `dispatch`.
 
 ### Adding a New Module
 
-To add a new module to the gateway, edit `routes.yaml` (or provide a custom
-manifest via env vars). No gateway Python code changes are needed.
+To add a new module, edit `routes.yaml` (or provide a custom manifest via env
+vars). **No gateway Python code changes are needed.** The module must provide:
 
-The module's `Config` class must implement:
-
-- `initialize(logger, setting)` — called once at gateway startup
-- `get_logger()` → returns the stored logger
-- `get_setting()` → returns the stored setting dict
-
-And the module must provide a `dispatch_graphql(**params)` function (or
-similar) that creates a short-lived engine instance and calls its GraphQL
-method.
+1. **Config class** with `initialize(logger, setting)` or `initialize(logger, **setting)`, matching the module's `config_init_style`
+2. **Dispatch functions** (e.g. `dispatch_graphql(**params)`) that execute the
+   module's business logic and return JSON-serializable results
+3. **Domain exceptions** (optional) — registered via `exception_handlers`
+4. **Lifecycle hooks** (optional) — `on_shutdown` for cleanup (e.g. SSE manager)
+5. **SSE manager** (optional) — for `handler_type: sse` routes
 
 ### Config Auto-Initialization
 
@@ -157,6 +176,36 @@ This replaces the need for any hard-coded `_init_xxx_config()` function in
 `app.py`. The default `config_exclude_keys` strips gateway-specific auth,
 server, and routing keys so only infrastructure/service settings reach the
 module Config.
+
+### Domain Exception Handlers
+
+Modules can declare domain exception classes that the gateway maps to HTTP
+status codes. Instead of hard-coding `from mcp_daemon_engine.utils.exceptions import
+...` in `app.py`, the manifest declares:
+
+```yaml
+exception_handlers:
+  - exception_class: "mcp_daemon_engine.utils.exceptions:AuthenticationError"
+    status_code: 401
+```
+
+The gateway resolves each class via `importlib` and registers a FastAPI
+exception handler. If the module isn't installed, the handler is skipped with a
+warning.
+
+### Lifecycle Hooks
+
+- `on_shutdown`: Called during FastAPI lifespan shutdown. Can be async or sync.
+  Used for cleanup (e.g. `sse_manager.cleanup_all()`).
+
+### Cross-Module Function Routing (`functs_on_local`)
+
+The `functs_on_local` setting for cross-module calls is now built
+**automatically from the manifest**. Each module with a `config_class` and a
+`graphql` route gets an entry. No hard-coded module names in `app.py`.
+
+Env var overrides: `FUNCTS_{NAME}_CLASS` overrides the class name for module
+`name`. `FUNCTS_ON_LOCAL_OVERRIDES` (JSON) adds/replaces entries.
 
 Manifest dispatch targets are imported at startup. Treat custom manifests as
 trusted deployment configuration; import-prefix allowlisting is not yet
@@ -202,10 +251,8 @@ Multi-process or multi-replica deployments must install a shared backend:
 ```python
 from silvaengine_gateway.tasks import TaskBackend, set_task_backend
 
-
 class SharedTaskBackend(TaskBackend):
     ...
-
 
 set_task_backend(SharedTaskBackend())
 ```

@@ -45,7 +45,9 @@ class RouteSpec(BaseModel):
     """A single route within a module."""
 
     path: str
-    handler_type: str = "graphql"  # "graphql" | "rest" | "background" | "task_status"
+    handler_type: str = (
+        "graphql"  # "graphql" | "rest" | "background" | "task_status" | "sse"
+    )
     dispatch: Optional[str] = None  # "knowledge_graph_engine.main:dispatch_graphql"
     methods: List[str] = Field(default_factory=lambda: ["POST"])
     auth: bool = True
@@ -79,15 +81,56 @@ class ModuleSpec(BaseModel):
     # "dict"   → Config.initialize(logger, setting)     (KGE pattern)
     # "kwargs" → Config.initialize(logger, **setting)     (ai_rfq_engine pattern)
 
-    config_exclude_keys: List[str] = Field(default_factory=lambda: [
-        # Gateway-only keys never passed to module configs
-        "auth_provider", "jwt_secret_key", "jwt_algorithm", "access_token_exp",
-        "admin_username", "admin_password", "admin_static_token",
-        "cognito_user_pool_id", "cognito_app_client_id", "cognito_app_secret",
-        "cognito_jwks_url", "jwks_cache_ttl", "local_user_file",
-        "host", "port", "workers",
-        "routes_config_path", "routes_config_json",
-    ])
+    config_exclude_keys: List[str] = Field(
+        default_factory=lambda: [
+            # Gateway-only keys never passed to module configs
+            "auth_provider",
+            "jwt_secret_key",
+            "jwt_algorithm",
+            "access_token_exp",
+            "admin_username",
+            "admin_password",
+            "admin_static_token",
+            "cognito_user_pool_id",
+            "cognito_app_client_id",
+            "cognito_app_secret",
+            "cognito_jwks_url",
+            "jwks_cache_ttl",
+            "local_user_file",
+            "host",
+            "port",
+            "workers",
+            "routes_config_path",
+            "routes_config_json",
+            "task_backend",
+            "task_table",
+            "task_ttl",
+            "rate_limit_backend",
+            "rate_limit_table",
+        ]
+    )
+
+    # Lifecycle hooks — "package.module:function" resolved via importlib
+    on_startup: Optional[str] = None
+    # Called after Config.initialize(); receives (logger, setting) dict-style.
+    on_shutdown: Optional[str] = None
+    # Called during FastAPI lifespan shutdown; async or sync, receives no args.
+
+    # Exception handlers — "package.module:ExceptionClass" resolved via importlib
+    # Maps domain exception classes to HTTP status codes.
+    # The gateway registers FastAPI exception handlers at startup.
+    exception_handlers: List[Dict[str, Any]] = Field(default_factory=list)
+    # Example:
+    #   - exception_class: "mcp_daemon_engine.utils.exceptions:AuthenticationError"
+    #     status_code: 401
+    #   - exception_class: "mcp_daemon_engine.utils.exceptions:InvalidRequestError"
+    #     status_code: 400
+
+    # SSE manager — "package.module:sse_manager_instance" resolved via importlib
+    # Used by handler_type: "sse" routes to connect/disconnect clients.
+    # If not specified, SSE routes will use a built-in in-memory manager.
+    sse_manager: Optional[str] = None
+    # e.g. "mcp_daemon_engine.handlers.sse_manager:sse_manager"
 
 
 # ---------------------------------------------------------------------------
@@ -151,11 +194,12 @@ def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
             )
 
         for route in module.routes:
-            if route.path in seen_paths:
+            route_key = (route.path, tuple(sorted(route.methods)))
+            if route_key in seen_paths:
                 warnings.append(
-                    f"Duplicate route path '{route.path}' in module '{module.name}'"
+                    f"Duplicate route path/methods '{route.path}' {route.methods} in module '{module.name}'"
                 )
-            seen_paths.add(route.path)
+            seen_paths.add(route_key)
 
             # Try to resolve the dispatch — log a warning if it fails
             if route.dispatch:
@@ -176,22 +220,23 @@ def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
 
 
 def _extract_partition_key(request: Request) -> tuple:
-    """Extract partition_key from the endpoint path and Part-Id header.
+    """Extract partition_key from the endpoint path and optional Part-Id header.
 
-    The path-level ``part_id`` remains part of the public URL, but the header is
-    required so callers explicitly identify the partition used by core
-    dispatch functions.
-
-    Returns (partition_key, endpoint_id, part_id).
-    Raises HTTPException(400) if Part-Id header is missing.
+    Returns (partition_key, endpoint_id, part_id). The route's ``part_id`` path
+    parameter is authoritative; the header remains a compatibility fallback for
+    older callers.
     """
     endpoint_id = request.path_params.get("endpoint_id", "")
-    part_id = request.headers.get("Part-Id") or request.headers.get("Part-ID")
+    part_id = (
+        request.path_params.get("part_id")
+        or request.headers.get("Part-Id")
+        or request.headers.get("Part-ID")
+    )
 
     if not part_id:
         raise HTTPException(
             status_code=400,
-            detail="Part-Id header is required to construct partition_key",
+            detail="part_id path parameter or Part-Id header is required to construct partition_key",
         )
     partition_key = f"{endpoint_id}#{part_id}"
     return partition_key, endpoint_id, part_id
@@ -214,7 +259,15 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
     """
 
     async def handler(request: Request) -> Dict[str, Any]:
-        params = await request.json()
+        # Safely read JSON body — GET/DELETE requests may have no body
+        try:
+            params = await request.json()
+        except Exception:
+            params = {}
+
+        if not isinstance(params, dict):
+            params = {}
+
         partition_key, endpoint_id, part_id = _extract_partition_key(request)
 
         # Build params dict
@@ -232,19 +285,27 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
             params["context"]["user"] = user
 
         # Execute dispatch in thread pool (sync dispatch functions)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(
                 _executor,
                 lambda: dispatch_fn(**params),
             )
-        except Exception as e:
-            logger.error(f"Dispatch error [{dispatch_fn.__name__}]: {traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=str(e))
+        except HTTPException:
+            raise
+        except Exception:
+            logger.error(
+                f"Dispatch error [{dispatch_fn.__name__}]: {traceback.format_exc()}"
+            )
+            raise
 
         # Normalize response — KGE returns {"body": json_string} or a dict
         try:
-            body = response.get("body", response) if isinstance(response, dict) else response
+            body = (
+                response.get("body", response)
+                if isinstance(response, dict)
+                else response
+            )
             result = json.loads(body) if isinstance(body, str) else body
         except (json.JSONDecodeError, TypeError):
             result = response
@@ -261,7 +322,15 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
     """
 
     async def handler(request: Request) -> Dict[str, Any]:
-        params = await request.json()
+        # Safely read JSON body — may be empty for some request types
+        try:
+            params = await request.json()
+        except Exception:
+            params = {}
+
+        if not isinstance(params, dict):
+            params = {}
+
         partition_key, endpoint_id, part_id = _extract_partition_key(request)
 
         if not params.get("context"):
@@ -278,12 +347,15 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
 
         task_id = generate_task_id()
         task_backend = get_task_backend()
-        task_backend.create(task_id, {
-            "partition_key": partition_key,
-            "document_external_id": params.get("document_external_id"),
-        })
+        task_backend.create(
+            task_id,
+            {
+                "partition_key": partition_key,
+                "document_external_id": params.get("document_external_id"),
+            },
+        )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         loop.run_in_executor(
             _executor,
             _run_background_dispatch,
@@ -301,7 +373,9 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
     return handler
 
 
-def _run_background_dispatch(task_id: str, dispatch_fn: Callable, params: Dict[str, Any]) -> None:
+def _run_background_dispatch(
+    task_id: str, dispatch_fn: Callable, params: Dict[str, Any]
+) -> None:
     """Execute a dispatch function in background and update task state."""
     task_backend = get_task_backend()
     try:
@@ -338,12 +412,135 @@ def _make_task_status_handler() -> Callable:
             task_backend.delete(task_id)
         elif task["status"] == "pending":
             import time
+
             elapsed = time.time() - task.get("created_at", time.time())
             response["elapsed_seconds"] = round(elapsed, 1)
 
         return response
 
     return handler
+
+
+def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
+    """Create a GET endpoint that returns an SSE StreamingResponse.
+
+    The handler connects the client to an SSEManager queue and streams
+    events (messages + heartbeats) until the client disconnects.
+    SSE is unidirectional (server → client). Clients send messages
+    via a separate POST endpoint (handler_type: rest, dispatch: ...sse_message).
+
+    Args:
+        sse_manager_ref: Dotted path to the SSE manager instance
+            (e.g. "mcp_daemon_engine.handlers.sse_manager:sse_manager").
+            If None, raises 503 when an SSE route is hit.
+    """
+    # Resolve the SSE manager at handler-creation time, not per-request
+    _sse_manager = None
+    if sse_manager_ref:
+        try:
+            _sse_manager = resolve_dispatch(sse_manager_ref)
+        except (ImportError, AttributeError, TypeError) as e:
+            logger.warning(
+                f"SSE manager '{sse_manager_ref}' could not be resolved: {e}"
+            )
+
+    async def sse_handler(request: Request) -> Any:
+        from fastapi.responses import StreamingResponse
+
+        if _sse_manager is None:
+            raise HTTPException(
+                status_code=503,
+                detail="SSE manager not available — no sse_manager configured for this module",
+            )
+
+        user = getattr(request.state, "user", None) or {}
+        username = user.get("username", "")
+
+        # Extract partition_key for partition-aware SSE delivery
+        try:
+            partition_key, endpoint_id, part_id = _extract_partition_key(request)
+        except HTTPException:
+            partition_key, endpoint_id, part_id = "", "", ""
+
+        # Register client with partition context
+        client_id, queue = await _sse_manager.add_client(
+            username, partition_key=partition_key,
+        )
+
+        # Replay missed messages
+        last_event_id = request.headers.get("last-event-id")
+        missed = await _sse_manager.get_missed_messages(
+            last_event_id,
+            partition_key=partition_key,
+        )
+        for msg in missed:
+            try:
+                await queue.put(msg)
+            except asyncio.QueueFull:
+                break
+
+        # Send initialization metadata
+        metadata = {
+            "type": "mcp_activity",
+            "method": "initialize",
+            "response": {
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {"listChanged": False},
+                        "resources": {"subscribe": False, "listChanged": False},
+                        "prompts": {"listChanged": False},
+                    },
+                    "serverInfo": {"name": "MCP SSE Server", "version": "1.0.0"},
+                }
+            },
+        }
+        try:
+            await queue.put(metadata)
+        except asyncio.QueueFull:
+            await _sse_manager.remove_client(client_id, username)
+            raise HTTPException(status_code=503, detail="Server too busy")
+
+        async def event_generator():
+            """Async generator yielding SSE frames."""
+            import json as _json
+            import pendulum
+
+            try:
+                yield (
+                    f"event: connected\ndata: "
+                    f"{_json.dumps({'client_id': client_id, 'timestamp': pendulum.now('UTC').isoformat()})}\n\n"
+                )
+                while True:
+                    try:
+                        message = await asyncio.wait_for(queue.get(), timeout=15)
+                        yield f"data: {_json.dumps(message, default=str)}\n\n"
+                    except asyncio.TimeoutError:
+                        # Heartbeat
+                        heartbeat = _json.dumps(
+                            {
+                                "client_id": client_id,
+                                "type": "heartbeat",
+                                "timestamp": pendulum.now("UTC").isoformat(),
+                            }
+                        )
+                        yield f"event: heartbeat\ndata: {heartbeat}\n\n"
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await _sse_manager.remove_client(client_id, username)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return sse_handler
 
 
 # ---------------------------------------------------------------------------
@@ -385,12 +582,13 @@ def init_module_configs(
 
         # Filter gateway-only keys
         module_setting = {
-            k: v for k, v in setting.items()
-            if k not in module.config_exclude_keys
+            k: v for k, v in setting.items() if k not in module.config_exclude_keys
         }
 
         if not module_setting:
-            logger.debug(f"Module '{module.name}': no settings to pass after filtering — skipping init")
+            logger.debug(
+                f"Module '{module.name}': no settings to pass after filtering — skipping init"
+            )
             continue
 
         module_logger = logging.getLogger(module.name)
@@ -427,6 +625,7 @@ def build_router_from_manifest(
     - "graphql" / "rest": _make_sync_handler (runs dispatch in thread pool)
     - "background": _make_background_handler (submits task, returns task_id)
     - "task_status": _make_task_status_handler (polls task state)
+    - "sse": _make_sse_handler (GET streaming via SSEManager)
 
     Args:
         modules: List of ModuleSpec from the route manifest
@@ -447,6 +646,9 @@ def build_router_from_manifest(
             # Task status routes — always use the built-in status handler
             if handler_type == "task_status":
                 handler = _make_task_status_handler()
+            elif handler_type == "sse":
+                # SSE routes — streaming via SSEManager, no dispatch needed
+                handler = _make_sse_handler(sse_manager_ref=module.sse_manager)
             else:
                 try:
                     dispatch_fn = resolve_dispatch(route.dispatch)
@@ -474,7 +676,8 @@ def build_router_from_manifest(
                     handler,
                     methods=[method],
                     dependencies=dependencies,
-                    name=route.name or f"{module.name}_{method.lower()}_{route.path.strip('/').replace('/', '_')}",
+                    name=route.name
+                    or f"{module.name}_{method.lower()}_{route.path.strip('/').replace('/', '_')}",
                 )
 
             logger.info(
