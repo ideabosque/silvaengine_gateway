@@ -52,7 +52,9 @@ from pathlib import Path
 
 # ── Ensure project roots are on sys.path ───────────────────────────
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
-_MCP_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent / "mcp_daemon_engine")
+_MCP_ROOT = str(
+    Path(__file__).resolve().parent.parent.parent.parent / "mcp_daemon_engine"
+)
 for _p in [_PROJECT_ROOT, _MCP_ROOT]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -66,7 +68,11 @@ def _promote_editable_finders() -> None:
     from importlib.machinery import PathFinder
 
     meta_path = _sys.meta_path
-    editable = [f for f in meta_path if hasattr(f, "__name__") and f.__name__ == "_EditableFinder"]
+    editable = [
+        f
+        for f in meta_path
+        if hasattr(f, "__name__") and f.__name__ == "_EditableFinder"
+    ]
     if not editable:
         return
     pf_index = None
@@ -141,22 +147,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--endpoint-id", type=str, default=None)
     parser.add_argument("--part-id", type=str, default=None)
     parser.add_argument(
-        "--query", "-q", type=str, default="functions",
-        choices=["functions", "tools", "resources", "prompts", "modules", "settings", "calls", "ping"],
+        "--query",
+        "-q",
+        type=str,
+        default="functions",
+        choices=[
+            "functions",
+            "tools",
+            "resources",
+            "prompts",
+            "modules",
+            "settings",
+            "calls",
+            "ping",
+        ],
         help=(
             "What to query: functions (all types), tools, resources, prompts, "
             "modules, settings, calls (function-call list), or ping (default: functions)"
         ),
     )
-    parser.add_argument("--graphql", type=str, default=None,
-                        help="Raw GraphQL query JSON (overrides --query)")
-    parser.add_argument("--raw", action="store_true",
-                        help="Print raw JSON response without formatting")
+    parser.add_argument(
+        "--graphql",
+        type=str,
+        default=None,
+        help="Raw GraphQL query JSON (overrides --query)",
+    )
+    parser.add_argument(
+        "--raw", action="store_true", help="Print raw JSON response without formatting"
+    )
     return parser.parse_args()
 
 
 def get_token(base_url: str, username: str, password: str) -> str:
-    resp = requests.post(f"{base_url}/auth/token", data={"username": username, "password": password}, timeout=10)
+    resp = requests.post(
+        f"{base_url}/auth/token",
+        data={"username": username, "password": password},
+        timeout=10,
+    )
     resp.raise_for_status()
     return resp.json()["access_token"]
 
@@ -182,7 +209,10 @@ def build_graphql_payload(args: argparse.Namespace) -> dict:
     if q in ("functions", "tools", "resources", "prompts"):
         # mcpFunctionList supports optional mcpType filter
         if q == "functions":
-            query = '{ mcpFunctionList { mcpFunctionList { %s } total pageNumber pageSize } }' % _FUNCTION_FIELDS
+            query = (
+                "{ mcpFunctionList { mcpFunctionList { %s } total pageNumber pageSize } }"
+                % _FUNCTION_FIELDS
+            )
         else:
             mcp_type = q[:-1]  # tools→tool, resources→resource, prompts→prompt
             query = (
@@ -192,15 +222,24 @@ def build_graphql_payload(args: argparse.Namespace) -> dict:
         return {"query": query}
 
     if q == "modules":
-        query = '{ mcpModuleList { mcpModuleList { %s } total pageNumber pageSize } }' % _MODULE_FIELDS
+        query = (
+            "{ mcpModuleList { mcpModuleList { %s } total pageNumber pageSize } }"
+            % _MODULE_FIELDS
+        )
         return {"query": query}
 
     if q == "settings":
-        query = '{ mcpSettingList { mcpSettingList { %s } total pageNumber pageSize } }' % _SETTING_FIELDS
+        query = (
+            "{ mcpSettingList { mcpSettingList { %s } total pageNumber pageSize } }"
+            % _SETTING_FIELDS
+        )
         return {"query": query}
 
     if q == "calls":
-        query = '{ mcpFunctionCallList { mcpFunctionCallList { %s } total pageNumber pageSize } }' % _FUNCTION_CALL_FIELDS
+        query = (
+            "{ mcpFunctionCallList { mcpFunctionCallList { %s } total pageNumber pageSize } }"
+            % _FUNCTION_CALL_FIELDS
+        )
         return {"query": query}
 
     # Fallback
@@ -292,14 +331,18 @@ def main() -> None:
                 for i, item in enumerate(items):
                     if isinstance(item, dict):
                         # Compact one-line display for readability
-                        print(f"  [{i+1}] {json.dumps(item, indent=4, ensure_ascii=False)}")
+                        print(
+                            f"  [{i+1}] {json.dumps(item, indent=4, ensure_ascii=False)}"
+                        )
                     else:
                         print(f"  [{i+1}] {item}")
             else:
                 print(f"  {json.dumps(value, indent=2, ensure_ascii=False)}")
         elif isinstance(value, list):
             for i, item in enumerate(value):
-                print(f"  [{i+1}] {json.dumps(item, indent=4, ensure_ascii=False) if isinstance(item, dict) else item}")
+                print(
+                    f"  [{i+1}] {json.dumps(item, indent=4, ensure_ascii=False) if isinstance(item, dict) else item}"
+                )
         else:
             # Scalar (e.g. ping returns a string)
             print(f"  {value}")

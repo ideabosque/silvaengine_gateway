@@ -189,6 +189,17 @@ def main() -> None:
         "neo4j_database": os.getenv("neo4j_database", "neo4j"),
         # Cache
         "cache_enabled": int(os.getenv("cache_enabled", "0")),
+        # MCP Daemon Engine — forwarded to mcp_daemon_engine.handlers.config:Config
+        "transport": os.getenv("MCP_TRANSPORT", "sse"),
+        "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
+        "funct_zip_path": os.getenv("FUNCT_ZIP_PATH"),
+        "funct_extract_path": os.getenv("FUNCT_EXTRACT_PATH"),
+        # Shared-store backends (multi-process support)
+        "task_backend": os.getenv("GATEWAY_TASK_BACKEND", "memory"),
+        "task_table": os.getenv("GATEWAY_TASK_TABLE"),
+        "task_ttl": os.getenv("GATEWAY_TASK_TTL"),
+        "rate_limit_backend": os.getenv("GATEWAY_RATE_LIMIT_BACKEND", "memory"),
+        "rate_limit_table": os.getenv("GATEWAY_RATE_LIMIT_TABLE"),
         # Cross-module routing (local invocations)
         # functs_on_local maps dispatch names to module/class entries
         # so Invoker.invoke_funct_on_local can call them in-process.

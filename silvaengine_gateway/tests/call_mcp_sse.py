@@ -38,7 +38,9 @@ import time
 from pathlib import Path
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
-_MCP_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent / "mcp_daemon_engine")
+_MCP_ROOT = str(
+    Path(__file__).resolve().parent.parent.parent.parent / "mcp_daemon_engine"
+)
 for _p in [_PROJECT_ROOT, _MCP_ROOT]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -50,8 +52,13 @@ from dotenv import load_dotenv
 def _promote_editable_finders() -> None:
     import sys as _sys
     from importlib.machinery import PathFinder
+
     meta_path = _sys.meta_path
-    editable = [f for f in meta_path if hasattr(f, "__name__") and f.__name__ == "_EditableFinder"]
+    editable = [
+        f
+        for f in meta_path
+        if hasattr(f, "__name__") and f.__name__ == "_EditableFinder"
+    ]
     if not editable:
         return
     pf_index = next((i for i, f in enumerate(meta_path) if f is PathFinder), None)
@@ -83,24 +90,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token", type=str, default=None)
     parser.add_argument("--endpoint-id", type=str, default=None)
     parser.add_argument("--part-id", type=str, default=None)
-    parser.add_argument("--timeout", "-t", type=int, default=30,
-                        help="SSE listen timeout in seconds (default: 30)")
-    parser.add_argument("--send", "-s", type=str, default=None,
-                        choices=["initialize", "tools/list", "resources/list", "prompts/list"],
-                        help="Send a JSON-RPC message after connecting")
-    parser.add_argument("--raw", action="store_true",
-                        help="Print raw SSE events without formatting")
+    parser.add_argument(
+        "--timeout",
+        "-t",
+        type=int,
+        default=30,
+        help="SSE listen timeout in seconds (default: 30)",
+    )
+    parser.add_argument(
+        "--send",
+        "-s",
+        type=str,
+        default=None,
+        choices=["initialize", "tools/list", "resources/list", "prompts/list"],
+        help="Send a JSON-RPC message after connecting",
+    )
+    parser.add_argument(
+        "--raw", action="store_true", help="Print raw SSE events without formatting"
+    )
     return parser.parse_args()
 
 
 def get_token(base_url: str, username: str, password: str) -> str:
-    resp = requests.post(f"{base_url}/auth/token", data={"username": username, "password": password}, timeout=10)
+    resp = requests.post(
+        f"{base_url}/auth/token",
+        data={"username": username, "password": password},
+        timeout=10,
+    )
     resp.raise_for_status()
     return resp.json()["access_token"]
 
 
-def listen_sse(base_url: str, endpoint_id: str, part_id: str, token: str,
-               timeout: int, raw: bool) -> None:
+def listen_sse(
+    base_url: str, endpoint_id: str, part_id: str, token: str, timeout: int, raw: bool
+) -> None:
     """Connect to SSE stream and print events."""
     sse_path = f"/{endpoint_id}/{part_id}/sse"
     url = f"{base_url}{sse_path}"
@@ -141,10 +164,14 @@ def listen_sse(base_url: str, endpoint_id: str, part_id: str, token: str,
                         if event_type == "heartbeat":
                             print(f"  ❤ heartbeat: {data.get('timestamp', '?')}")
                         elif event_type == "connected":
-                            print(f"  ✅ connected: client_id={data.get('client_id', '?')}")
+                            print(
+                                f"  ✅ connected: client_id={data.get('client_id', '?')}"
+                            )
                         else:
                             print(f"  📨 [{event_type or 'message'}]")
-                            print(f"     {json.dumps(data, indent=2, ensure_ascii=False)[:500]}")
+                            print(
+                                f"     {json.dumps(data, indent=2, ensure_ascii=False)[:500]}"
+                            )
                     except json.JSONDecodeError:
                         print(f"  📨 [{event_type or 'message'}] {data_str[:200]}")
 
@@ -161,8 +188,9 @@ def listen_sse(base_url: str, endpoint_id: str, part_id: str, token: str,
         print("\n  SSE stream interrupted by user")
 
 
-def send_message(base_url: str, endpoint_id: str, part_id: str, token: str,
-                 method: str, raw: bool) -> None:
+def send_message(
+    base_url: str, endpoint_id: str, part_id: str, token: str, method: str, raw: bool
+) -> None:
     """Send a JSON-RPC message via the SSE POST endpoint."""
     sse_post_path = f"/{endpoint_id}/{part_id}/sse"
     url = f"{base_url}{sse_post_path}"
@@ -190,7 +218,9 @@ def send_message(base_url: str, endpoint_id: str, part_id: str, token: str,
         else:
             try:
                 data = resp.json()
-                print(f"  Response: {json.dumps(data, indent=2, ensure_ascii=False)[:500]}")
+                print(
+                    f"  Response: {json.dumps(data, indent=2, ensure_ascii=False)[:500]}"
+                )
             except json.JSONDecodeError:
                 print(f"  Response: {resp.text[:500]}")
     except requests.ConnectionError:

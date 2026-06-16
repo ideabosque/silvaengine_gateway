@@ -138,6 +138,41 @@ class ModuleSpec(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _resolve_ref(ref_path: str, *, require_callable: bool = True) -> Any:
+    """Resolve a dotted path to a module attribute.
+
+    Format: ``"package.module:function"`` or ``"package.module.function"``.
+
+    When *require_callable* is True (default) the resolved object must be
+    callable — used for dispatch functions.  When False, any object is
+    accepted — used for SSE manager *instances* which are not callable.
+    """
+    if ":" in ref_path:
+        module_path, attr_name = ref_path.rsplit(":", 1)
+    else:
+        module_path, attr_name = ref_path.rsplit(".", 1)
+
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as e:
+        raise ImportError(
+            f"Cannot import module '{module_path}' for '{ref_path}': {e}"
+        ) from e
+
+    obj = getattr(module, attr_name, None)
+    if obj is None:
+        raise AttributeError(
+            f"Module '{module_path}' has no attribute '{attr_name}' (from '{ref_path}')"
+        )
+
+    if require_callable and not callable(obj):
+        raise TypeError(
+            f"Ref '{ref_path}' resolved to {type(obj).__name__}, expected callable"
+        )
+
+    return obj
+
+
 def resolve_dispatch(dispatch_path: str) -> Callable:
     """
     Resolve a dotted dispatch path to a callable.
@@ -147,30 +182,7 @@ def resolve_dispatch(dispatch_path: str) -> Callable:
         "knowledge_graph_engine.main:dispatch_graphql"
         "knowledge_graph_engine.handlers.extraction.handler:dispatch_extract"
     """
-    if ":" in dispatch_path:
-        module_path, attr_name = dispatch_path.rsplit(":", 1)
-    else:
-        module_path, attr_name = dispatch_path.rsplit(".", 1)
-
-    try:
-        module = importlib.import_module(module_path)
-    except ImportError as e:
-        raise ImportError(
-            f"Cannot import dispatch module '{module_path}' for '{dispatch_path}': {e}"
-        ) from e
-
-    handler = getattr(module, attr_name, None)
-    if handler is None:
-        raise AttributeError(
-            f"Module '{module_path}' has no attribute '{attr_name}' (from dispatch '{dispatch_path}')"
-        )
-
-    if not callable(handler):
-        raise TypeError(
-            f"Dispatch '{dispatch_path}' resolved to {type(handler).__name__}, expected callable"
-        )
-
-    return handler
+    return _resolve_ref(dispatch_path, require_callable=True)
 
 
 def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
@@ -438,7 +450,7 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
     _sse_manager = None
     if sse_manager_ref:
         try:
-            _sse_manager = resolve_dispatch(sse_manager_ref)
+            _sse_manager = _resolve_ref(sse_manager_ref, require_callable=False)
         except (ImportError, AttributeError, TypeError) as e:
             logger.warning(
                 f"SSE manager '{sse_manager_ref}' could not be resolved: {e}"
@@ -464,7 +476,8 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
 
         # Register client with partition context
         client_id, queue = await _sse_manager.add_client(
-            username, partition_key=partition_key,
+            username,
+            partition_key=partition_key,
         )
 
         # Replay missed messages
