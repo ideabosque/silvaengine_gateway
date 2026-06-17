@@ -25,13 +25,19 @@ import sys
 from pathlib import Path
 
 # ── Ensure project roots are on sys.path ───────────────────────────
-# When run via VS Code debugger or `python path/to/run_daemon.py`,
-# the package roots aren't on sys.path. Add them so both
-# `silvaengine_gateway` and `knowledge_graph_engine` can be imported
-# regardless of how this script is invoked.
+# When run via VS Code debugger or `python path/to/run_daemon.py`, the sibling
+# package roots aren't on sys.path. Add the gateway plus every engine the route
+# manifest dispatches to, so their `dispatch_*` functions resolve at startup —
+# otherwise the gateway silently skips those routes and they 404. Roots are
+# inserted ahead of the monorepo cwd so the real package wins over the
+# namespace-package shadow of the project directory.
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
-_KGE_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent / "knowledge_graph_engine")
-for _p in [_PROJECT_ROOT, _KGE_ROOT]:
+_MONOREPO = Path(__file__).resolve().parent.parent.parent.parent
+_SIBLING_ROOTS = [
+    str(_MONOREPO / name)
+    for name in ("knowledge_graph_engine", "ai_rfq_engine", "mcp_daemon_engine")
+]
+for _p in [_PROJECT_ROOT, *_SIBLING_ROOTS]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
