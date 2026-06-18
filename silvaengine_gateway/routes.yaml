@@ -61,6 +61,16 @@ modules:
     transport: hybrid
     config_class: "mcp_daemon_engine.handlers.config:Config"
     config_init_style: dict
+    config_exclude_keys:
+      - host
+      - workers
+      - routes_config_path
+      - routes_config_json
+      - task_backend
+      - task_table
+      - task_ttl
+      - rate_limit_backend
+      - rate_limit_table
     on_shutdown: "mcp_daemon_engine.handlers.sse_manager:cleanup_sse"
     sse_manager: "mcp_daemon_engine.handlers.sse_manager:sse_manager"
     exception_handlers:
