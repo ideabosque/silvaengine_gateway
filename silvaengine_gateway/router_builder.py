@@ -19,6 +19,7 @@ import asyncio
 import importlib
 import json
 import logging
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
@@ -254,6 +255,23 @@ def _extract_partition_key(request: Request) -> tuple:
     return partition_key, endpoint_id, part_id
 
 
+def _dispatch_label(params: Dict[str, Any]) -> str:
+    """Human-readable summary of a dispatch payload for request logging.
+
+    Surfaces the MCP JSON-RPC method (and tool name for ``tools/call``) so MCP
+    activity is visible in the gateway log; falls back to a GraphQL hint.
+    """
+    method = params.get("method")
+    if method:
+        if method == "tools/call":
+            name = (params.get("params") or {}).get("name")
+            return f"jsonrpc:tools/call tool={name}" if name else "jsonrpc:tools/call"
+        return f"jsonrpc:{method}"
+    if params.get("query"):
+        return "graphql"
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Route handler factories
 # ---------------------------------------------------------------------------
@@ -297,6 +315,15 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
             params["context"]["user"] = user
 
         # Execute dispatch in thread pool (sync dispatch functions)
+        label = _dispatch_label(params)
+        logger.info(
+            "→ %s %s [%s%s]",
+            request.method,
+            request.url.path,
+            dispatch_fn.__name__,
+            f" {label}" if label else "",
+        )
+        started = time.perf_counter()
         loop = asyncio.get_running_loop()
         try:
             response = await loop.run_in_executor(
@@ -310,6 +337,15 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
                 f"Dispatch error [{dispatch_fn.__name__}]: {traceback.format_exc()}"
             )
             raise
+
+        logger.info(
+            "← %s %s [%s%s] %.0f ms",
+            request.method,
+            request.url.path,
+            dispatch_fn.__name__,
+            f" {label}" if label else "",
+            (time.perf_counter() - started) * 1000,
+        )
 
         # Normalize response — KGE returns {"body": json_string} or a dict
         try:
@@ -365,6 +401,16 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
                 "partition_key": partition_key,
                 "document_external_id": params.get("document_external_id"),
             },
+        )
+
+        label = _dispatch_label(params)
+        logger.info(
+            "⇢ %s %s [%s%s] background task=%s",
+            request.method,
+            request.url.path,
+            dispatch_fn.__name__,
+            f" {label}" if label else "",
+            task_id,
         )
 
         loop = asyncio.get_running_loop()
