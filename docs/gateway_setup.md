@@ -168,6 +168,7 @@ additions.
 
 | Script | Purpose |
 |---|---|
+| `gen_token.py` | Generate a JWT from `.env` (admin/user/custom; reuses gateway auth) |
 | `call_search.py` | Test KGE search (text2cypher, vector, hybrid) |
 | `call_inquire_catalog.py` | Test AI RFQ Engine inquireCatalog |
 | `call_mcp_graphql.py` | Test MCP Daemon GraphQL |
