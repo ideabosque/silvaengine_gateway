@@ -147,12 +147,13 @@ def listen_sse(
     base_url: str, endpoint_id: str, part_id: str, token: str, timeout: int, raw: bool
 ) -> None:
     """Connect to SSE stream and print events."""
-    sse_path = f"/{endpoint_id}/{part_id}/sse"
+    sse_path = f"/{endpoint_id}/sse"
     url = f"{base_url}{sse_path}"
 
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "text/event-stream",
+        "Part-Id": part_id,
     }
 
     print(f"\n{'='*60}")
@@ -225,7 +226,7 @@ def send_message(
     raw: bool,
 ) -> None:
     """Send a JSON-RPC message via the SSE POST endpoint."""
-    sse_post_path = f"/{endpoint_id}/{part_id}/sse"
+    sse_post_path = f"/{endpoint_id}/sse"
     url = f"{base_url}{sse_post_path}"
 
     payload = {

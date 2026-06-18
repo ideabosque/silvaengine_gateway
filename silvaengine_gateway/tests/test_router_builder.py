@@ -31,7 +31,7 @@ def test_module_spec_validation():
         transport="graphql",
         routes=[
             RouteSpec(
-                path="/{endpoint_id}/{part_id}/knowledge_graph_graphql",
+                path="/{endpoint_id}/knowledge_graph_graphql",
                 dispatch="knowledge_graph_engine.main:dispatch_graphql",
                 methods=["POST"],
                 auth=True,

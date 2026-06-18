@@ -233,23 +233,23 @@ def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
 
 
 def _extract_partition_key(request: Request) -> tuple:
-    """Extract partition_key from the endpoint path and optional Part-Id header.
+    """Extract partition_key from the endpoint path and the Part-Id header.
 
-    Returns (partition_key, endpoint_id, part_id). The route's ``part_id`` path
-    parameter is authoritative; the header remains a compatibility fallback for
-    older callers.
+    Returns (partition_key, endpoint_id, part_id). ``endpoint_id`` comes from the
+    URL path; ``part_id`` is supplied by the ``Part-Id`` header (the ``part_id``
+    path parameter remains a legacy fallback for any older route templates).
     """
     endpoint_id = request.path_params.get("endpoint_id", "")
     part_id = (
-        request.path_params.get("part_id")
-        or request.headers.get("Part-Id")
+        request.headers.get("Part-Id")
         or request.headers.get("Part-ID")
+        or request.path_params.get("part_id")
     )
 
     if not part_id:
         raise HTTPException(
             status_code=400,
-            detail="part_id path parameter or Part-Id header is required to construct partition_key",
+            detail="Part-Id header is required to construct partition_key",
         )
     partition_key = f"{endpoint_id}#{part_id}"
     return partition_key, endpoint_id, part_id
@@ -425,7 +425,7 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
         return {
             "task_id": task_id,
             "status": "pending",
-            "message": f"Job submitted. Poll GET /{endpoint_id}/{part_id}/extract/status/{task_id} for status.",
+            "message": f"Job submitted. Poll GET /{endpoint_id}/extract/status/{task_id} (with Part-Id header) for status.",
         }
 
     return handler

@@ -66,24 +66,29 @@ The default `JWT_SECRET_KEY=CHANGEME` is for development only.
 
 ## Default Routes
 
+Paths carry only `{ep}` (endpoint_id). The tenant partition id is sent in the
+**`Part-Id` request header**; the gateway builds `partition_key = "{ep}#{Part-Id}"`.
+
 | Method | Path | Auth | Purpose |
 |---|---|:---:|---|
 | `GET` | `/health` | No | Service health |
 | `POST` | `/auth/token` | No | Obtain a local or Cognito access token |
 | `GET` | `/me` | Yes | Return authenticated claims |
-| `POST` | `/{ep}/{part}/knowledge_graph_graphql` | Yes | KGE GraphQL |
-| `POST` | `/{ep}/{part}/extract` | Yes | KGE extraction |
-| `GET` | `/{ep}/{part}/extract/status/{task_id}` | Yes | Poll extraction status |
-| `POST` | `/{ep}/{part}/ai_rfq_graphql` | Yes | AI RFQ Engine GraphQL |
-| `POST` | `/{ep}/{part}/mcp_daemon_graphql` | Yes | MCP Daemon GraphQL |
-| `POST` | `/{ep}/{part}/mcp` | Yes | MCP JSON-RPC |
-| `GET` | `/{ep}/{part}/sse` | Yes | MCP SSE stream |
-| `POST` | `/{ep}/{part}/sse` | Yes | MCP SSE message |
-| `POST` | `/{ep}/{part}/mcp_async_execute` | Yes | MCP async tool execution |
-| `GET` | `/{ep}/{part}/mcp_async/status/{task_id}` | Yes | MCP task status |
-| `POST` | `/{ep}/{part}/admin/cache/refresh` | Yes | MCP cache refresh |
-| `DELETE` | `/{ep}/{part}/admin/cache` | Yes | MCP cache clear |
-| `GET` | `/{ep}/{part}/mcp_info` | Yes | MCP endpoint info |
+| `POST` | `/{ep}/knowledge_graph_graphql` | Yes | KGE GraphQL |
+| `POST` | `/{ep}/extract` | Yes | KGE extraction |
+| `GET` | `/{ep}/extract/status/{task_id}` | Yes | Poll extraction status |
+| `POST` | `/{ep}/ai_rfq_graphql` | Yes | AI RFQ Engine GraphQL |
+| `POST` | `/{ep}/mcp_daemon_graphql` | Yes | MCP Daemon GraphQL |
+| `POST` | `/{ep}/mcp` | Yes | MCP JSON-RPC |
+| `GET` | `/{ep}/sse` | Yes | MCP SSE stream |
+| `POST` | `/{ep}/sse` | Yes | MCP SSE message |
+| `POST` | `/{ep}/mcp_async_execute` | Yes | MCP async tool execution |
+| `GET` | `/{ep}/mcp_async/status/{task_id}` | Yes | MCP task status |
+| `POST` | `/{ep}/admin/cache/refresh` | Yes | MCP cache refresh |
+| `DELETE` | `/{ep}/admin/cache` | Yes | MCP cache clear |
+| `GET` | `/{ep}/mcp_info` | Yes | MCP endpoint info |
+
+> All tenant-scoped requests require a `Part-Id: <part_id>` header.
 
 Module dispatch routes build `partition_key` from the route path as
 `<endpoint_id>#<part_id>`. The `Part-Id` header remains accepted as a
@@ -118,7 +123,7 @@ modules:
       - exception_class: "my_module.exceptions:AuthenticationError"
         status_code: 401
     routes:
-      - path: "/{endpoint_id}/{part_id}/my_graphql"
+      - path: "/{endpoint_id}/my_graphql"  # part_id comes from the Part-Id header
         handler_type: graphql
         dispatch: "my_module.main:dispatch_graphql"
         methods: ["POST"]

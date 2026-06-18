@@ -282,7 +282,7 @@ def main() -> None:
         token = get_token(base_url, username, password)
 
     # Build request
-    graphql_path = f"/{endpoint_id}/{part_id}/mcp_daemon_graphql"
+    graphql_path = f"/{endpoint_id}/mcp_daemon_graphql"
     url = f"{base_url}{graphql_path}"
     payload = build_graphql_payload(args)
 

@@ -296,7 +296,7 @@ def main() -> None:
 
     # ── Build request ────────────────────────────────────────────────
     # AI RFQ Engine GraphQL endpoint
-    graphql_path = f"/{endpoint_id}/{part_id}/ai_rfq_graphql"
+    graphql_path = f"/{endpoint_id}/ai_rfq_graphql"
     url = f"{base_url}{graphql_path}"
 
     payload = build_graphql_payload(args)

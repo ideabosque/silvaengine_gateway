@@ -7,6 +7,9 @@
 # handler_type: graphql | rest | background | task_status | sse
 # dispatch: "package.module:function_name"
 #
+# Paths carry only {endpoint_id}; the tenant partition id is supplied by the
+# "Part-Id" request header. The gateway builds partition_key = "{endpoint_id}#{Part-Id}".
+#
 # config_class: "package.module:ClassName" — auto-initialize at startup
 # config_init_style: "dict" (Config.initialize(logger, setting))
 #                    "kwargs" (Config.initialize(logger, **setting))
@@ -25,19 +28,19 @@ modules:
     config_class: "knowledge_graph_engine.handlers.config:Config"
     config_init_style: dict
     routes:
-      - path: "/{endpoint_id}/{part_id}/knowledge_graph_graphql"
+      - path: "/{endpoint_id}/knowledge_graph_graphql"
         handler_type: graphql
         dispatch: "knowledge_graph_engine.main:dispatch_graphql"
         methods: ["POST"]
         auth: true
 
-      - path: "/{endpoint_id}/{part_id}/extract"
+      - path: "/{endpoint_id}/extract"
         handler_type: background
         dispatch: "knowledge_graph_engine.main:dispatch_extract"
         methods: ["POST"]
         auth: true
 
-      - path: "/{endpoint_id}/{part_id}/extract/status/{task_id}"
+      - path: "/{endpoint_id}/extract/status/{task_id}"
         handler_type: task_status
         methods: ["GET"]
         auth: true
@@ -49,7 +52,7 @@ modules:
     config_class: "ai_rfq_engine.handlers.config:Config"
     config_init_style: dict
     routes:
-      - path: "/{endpoint_id}/{part_id}/ai_rfq_graphql"
+      - path: "/{endpoint_id}/ai_rfq_graphql"
         handler_type: graphql
         dispatch: "ai_rfq_engine.main:dispatch_graphql"
         methods: ["POST"]
@@ -86,61 +89,61 @@ modules:
         status_code: 500
     routes:
       # GraphQL — MCP daemon queries/mutations
-      - path: "/{endpoint_id}/{part_id}/mcp_daemon_graphql"
+      - path: "/{endpoint_id}/mcp_daemon_graphql"
         handler_type: graphql
         dispatch: "mcp_daemon_engine.main:dispatch_graphql"
         methods: ["POST"]
         auth: true
 
       # REST — MCP JSON-RPC (no SSE broadcast)
-      - path: "/{endpoint_id}/{part_id}/mcp"
+      - path: "/{endpoint_id}/mcp"
         handler_type: rest
         dispatch: "mcp_daemon_engine.main:dispatch_mcp"
         methods: ["POST"]
         auth: true
 
       # SSE stream (GET) — long-lived SSE connection
-      - path: "/{endpoint_id}/{part_id}/sse"
+      - path: "/{endpoint_id}/sse"
         handler_type: sse
         methods: ["GET"]
         auth: true
 
       # SSE POST — JSON-RPC message + SSE push to connected clients
-      - path: "/{endpoint_id}/{part_id}/sse"
+      - path: "/{endpoint_id}/sse"
         handler_type: rest
         dispatch: "mcp_daemon_engine.main:dispatch_sse_message"
         methods: ["POST"]
         auth: true
 
       # Background — async tool execution
-      - path: "/{endpoint_id}/{part_id}/mcp_async_execute"
+      - path: "/{endpoint_id}/mcp_async_execute"
         handler_type: background
         dispatch: "mcp_daemon_engine.main:dispatch_mcp_async"
         methods: ["POST"]
         auth: true
 
       # Task status
-      - path: "/{endpoint_id}/{part_id}/mcp_async/status/{task_id}"
+      - path: "/{endpoint_id}/mcp_async/status/{task_id}"
         handler_type: task_status
         methods: ["GET"]
         auth: true
 
       # Admin — cache refresh
-      - path: "/{endpoint_id}/{part_id}/admin/cache/refresh"
+      - path: "/{endpoint_id}/admin/cache/refresh"
         handler_type: rest
         dispatch: "mcp_daemon_engine.main:dispatch_cache_refresh"
         methods: ["POST"]
         auth: true
 
       # Admin — cache clear (specific partition)
-      - path: "/{endpoint_id}/{part_id}/admin/cache"
+      - path: "/{endpoint_id}/admin/cache"
         handler_type: rest
         dispatch: "mcp_daemon_engine.main:dispatch_cache_clear"
         methods: ["DELETE"]
         auth: true
 
       # Endpoint info
-      - path: "/{endpoint_id}/{part_id}/mcp_info"
+      - path: "/{endpoint_id}/mcp_info"
         handler_type: rest
         dispatch: "mcp_daemon_engine.main:dispatch_mcp_info"
         methods: ["GET"]

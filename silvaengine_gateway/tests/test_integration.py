@@ -188,6 +188,6 @@ class TestRouteManifest:
         assert "/health" in paths
         assert "/auth/token" in paths
         assert "/me" in paths
-        assert "/{endpoint_id}/{part_id}/knowledge_graph_graphql" in paths
-        assert "/{endpoint_id}/{part_id}/extract" in paths
-        assert "/{endpoint_id}/{part_id}/extract/status/{task_id}" in paths
+        assert "/{endpoint_id}/knowledge_graph_graphql" in paths
+        assert "/{endpoint_id}/extract" in paths
+        assert "/{endpoint_id}/extract/status/{task_id}" in paths

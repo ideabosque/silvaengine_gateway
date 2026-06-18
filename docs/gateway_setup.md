@@ -120,7 +120,7 @@ Example:
       - exception_class: "my_new_module.exceptions:AuthenticationError"
         status_code: 401
     routes:
-      - path: "/{endpoint_id}/{part_id}/my_graphql"
+      - path: "/{endpoint_id}/my_graphql"  # part_id comes from the Part-Id header
         handler_type: graphql
         dispatch: "my_new_module.main:dispatch_graphql"
         methods: ["POST"]

@@ -126,28 +126,28 @@ def _graphql_url(base_url=None, endpoint_id=None, part_id=None):
     base_url = base_url or BASE_URL
     endpoint_id = endpoint_id or ENDPOINT_ID
     part_id = part_id or PART_ID
-    return f"{base_url}/{endpoint_id}/{part_id}/mcp_daemon_graphql"
+    return f"{base_url}/{endpoint_id}/mcp_daemon_graphql"
 
 
 def _rest_url(base_url=None, endpoint_id=None, part_id=None):
     base_url = base_url or BASE_URL
     endpoint_id = endpoint_id or ENDPOINT_ID
     part_id = part_id or PART_ID
-    return f"{base_url}/{endpoint_id}/{part_id}/mcp"
+    return f"{base_url}/{endpoint_id}/mcp"
 
 
 def _sse_url(base_url=None, endpoint_id=None, part_id=None):
     base_url = base_url or BASE_URL
     endpoint_id = endpoint_id or ENDPOINT_ID
     part_id = part_id or PART_ID
-    return f"{base_url}/{endpoint_id}/{part_id}/sse"
+    return f"{base_url}/{endpoint_id}/sse"
 
 
 def _mcp_info_url(base_url=None, endpoint_id=None, part_id=None):
     base_url = base_url or BASE_URL
     endpoint_id = endpoint_id or ENDPOINT_ID
     part_id = part_id or PART_ID
-    return f"{base_url}/{endpoint_id}/{part_id}/mcp_info"
+    return f"{base_url}/{endpoint_id}/mcp_info"
 
 
 def _auth_headers(token, part_id=None):

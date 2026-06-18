@@ -260,7 +260,7 @@ def register_neo4j(
               f'GraphDatabase.driver(\'{neo4j_uri}\', '
               f'auth=(\'{neo4j_username}\', \'YOUR_PASSWORD\')).verify_connectivity(); print(\'OK\')"')
         sys.exit(1)
-    graphql_path = f"/{endpoint_id}/{part_id}/knowledge_graph_graphql"
+    graphql_path = f"/{endpoint_id}/knowledge_graph_graphql"
     url = f"{base_url}{graphql_path}"
 
     mutation = (
@@ -420,7 +420,7 @@ def main() -> None:
         return
 
     # ── Build request ────────────────────────────────────────────────
-    graphql_path = f"/{endpoint_id}/{part_id}/knowledge_graph_graphql"
+    graphql_path = f"/{endpoint_id}/knowledge_graph_graphql"
     url = f"{base_url}{graphql_path}"
 
     payload = build_graphql_payload(args)

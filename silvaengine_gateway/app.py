@@ -160,21 +160,21 @@ def _default_manifest() -> List[ModuleSpec]:
             transport="graphql",
             routes=[
                 RouteSpec(
-                    path="/{endpoint_id}/{part_id}/knowledge_graph_graphql",
+                    path="/{endpoint_id}/knowledge_graph_graphql",
                     handler_type="graphql",
                     dispatch="knowledge_graph_engine.main:dispatch_graphql",
                     methods=["POST"],
                     auth=True,
                 ),
                 RouteSpec(
-                    path="/{endpoint_id}/{part_id}/extract",
+                    path="/{endpoint_id}/extract",
                     handler_type="background",
                     dispatch="knowledge_graph_engine.main:dispatch_extract",
                     methods=["POST"],
                     auth=True,
                 ),
                 RouteSpec(
-                    path="/{endpoint_id}/{part_id}/extract/status/{task_id}",
+                    path="/{endpoint_id}/extract/status/{task_id}",
                     handler_type="task_status",
                     methods=["GET"],
                     auth=True,

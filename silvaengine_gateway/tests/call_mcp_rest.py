@@ -159,9 +159,9 @@ def main() -> None:
         token = get_token(base_url, username, password)
 
     if args.mcp_info:
-        info_path = f"/{endpoint_id}/{part_id}/mcp_info"
+        info_path = f"/{endpoint_id}/mcp_info"
         url = f"{base_url}{info_path}"
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {token}", "Part-Id": part_id}
 
         print(f"\n{'='*60}")
         print("  MCP configuration summary")
@@ -203,7 +203,7 @@ def main() -> None:
             payload["params"] = json.loads(args.params)
 
     # Send to REST endpoint
-    rest_path = f"/{endpoint_id}/{part_id}/mcp"
+    rest_path = f"/{endpoint_id}/mcp"
     url = f"{base_url}{rest_path}"
 
     headers = {
