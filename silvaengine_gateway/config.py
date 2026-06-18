@@ -58,7 +58,6 @@ class GatewayConfig:
 
     # Route manifest settings
     routes_config_path: Optional[str] = None  # Path to routes.yaml
-    routes_config_json: Optional[str] = None   # JSON string of route config
 
     # KGE engine reference (set by lifespan when initializing)
     kge: Any = None
@@ -127,7 +126,6 @@ class GatewayConfig:
 
         # Route manifest settings
         cls.routes_config_path = setting.get("routes_config_path", os.getenv("GATEWAY_ROUTES_CONFIG_PATH"))
-        cls.routes_config_json = setting.get("routes_config_json", os.getenv("GATEWAY_ROUTES_CONFIG_JSON"))
 
         if cls.auth_provider == "cognito":
             cls.cognito_user_pool_id = setting.get("cognito_user_pool_id", os.getenv("COGNITO_USER_POOL_ID", ""))

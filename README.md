@@ -90,20 +90,16 @@ Paths carry only `{ep}` (endpoint_id). The tenant partition id is sent in the
 
 > All tenant-scoped requests require a `Part-Id: <part_id>` header.
 
-Module dispatch routes build `partition_key` from the route path as
-`<endpoint_id>#<part_id>`. The `Part-Id` header remains accepted as a
-compatibility fallback for older callers.
+Module dispatch routes build `partition_key` as `<endpoint_id>#<part_id>`, where
+`endpoint_id` comes from the route path and `part_id` from the `Part-Id` header.
 
 ## Route Manifest
 
 The gateway loads routes in this order:
 
-1. `GATEWAY_ROUTES_CONFIG_JSON`
-2. `GATEWAY_ROUTES_CONFIG_PATH`
-3. Packaged `silvaengine_gateway/routes.yaml`
-4. The built-in KGE manifest
-
-`GATEWAY_ROUTES_CONFIG_JSON` must contain a JSON array of module objects.
+1. `GATEWAY_ROUTES_CONFIG_PATH` (path to a YAML/JSON manifest file)
+2. Packaged `silvaengine_gateway/routes.yaml`
+3. The built-in KGE manifest
 
 ### Module Specification
 
@@ -236,7 +232,6 @@ implemented.
 | `GATEWAY_HOST` | `0.0.0.0` | Bind address |
 | `GATEWAY_PORT` | `8000` | Bind port |
 | `GATEWAY_ROUTES_CONFIG_PATH` | packaged file | YAML or JSON manifest path |
-| `GATEWAY_ROUTES_CONFIG_JSON` | empty | Inline JSON module array |
 | `GATEWAY_DISPATCH_WORKERS` | `8` | Dispatch thread-pool size |
 | `GATEWAY_RATE_LIMIT` | `100` | Requests per client IP and window |
 | `GATEWAY_RATE_WINDOW` | `60` | Rate-limit window in seconds |

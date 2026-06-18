@@ -109,24 +109,11 @@ _promote_editable_finders()
 def load_route_manifest(config: GatewayConfig) -> List[ModuleSpec]:
     """
     Load route manifest from:
-    1. GATEWAY_ROUTES_CONFIG_JSON env var (JSON string)
-    2. GATEWAY_ROUTES_CONFIG_PATH env var (YAML or JSON file)
-    3. routes.yaml packaged with the gateway
-    4. Built-in default (KGE only)
+    1. GATEWAY_ROUTES_CONFIG_PATH env var (YAML or JSON file)
+    2. routes.yaml packaged with the gateway
+    3. Built-in default (KGE only)
     """
-    # Priority 1: env var JSON
-    env_routes_json = (
-        os.environ.get("GATEWAY_ROUTES_CONFIG_JSON") or config.routes_config_json
-    )
-    if env_routes_json:
-        try:
-            modules = json.loads(env_routes_json)
-            return [ModuleSpec(**m) for m in modules]
-        except (json.JSONDecodeError, Exception) as e:
-            logger.error(f"Failed to parse GATEWAY_ROUTES_CONFIG_JSON: {e}")
-            raise
-
-    # Priority 2: explicit path
+    # Priority 1: explicit path
     configured_path = config.routes_config_path or os.environ.get(
         "GATEWAY_ROUTES_CONFIG_PATH"
     )
@@ -146,7 +133,7 @@ def load_route_manifest(config: GatewayConfig) -> List[ModuleSpec]:
             logger.error(f"Failed to load routes from {routes_file}: {e}")
             raise
 
-    # Priority 3: Built-in default (KGE only)
+    # Priority 2: Built-in default (KGE only)
     logger.info("No route manifest found — using built-in default (KGE only)")
     return _default_manifest()
 
@@ -491,7 +478,6 @@ def build_setting_from_env() -> Dict[str, Any]:
         "workers": os.getenv("GATEWAY_WORKERS", "1"),
         # Route manifest
         "routes_config_path": os.getenv("GATEWAY_ROUTES_CONFIG_PATH"),
-        "routes_config_json": os.getenv("GATEWAY_ROUTES_CONFIG_JSON"),
         # Tables
         "initialize_tables": int(os.getenv("initialize_tables", "0")),
         # LLM (shared with core)

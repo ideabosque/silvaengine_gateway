@@ -170,7 +170,6 @@ def main() -> None:
         "workers": os.getenv("GATEWAY_WORKERS", "1"),
         # Route manifest
         "routes_config_path": os.getenv("GATEWAY_ROUTES_CONFIG_PATH"),
-        "routes_config_json": os.getenv("GATEWAY_ROUTES_CONFIG_JSON"),
         # DynamoDB tables
         "initialize_tables": int(os.getenv("initialize_tables", "0")),
         # LLM (shared with core)

@@ -35,7 +35,6 @@ Key variables:
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | empty | Local admin credentials |
 | `GATEWAY_PORT` | `8000` | Bind port |
 | `GATEWAY_ROUTES_CONFIG_PATH` | packaged `routes.yaml` | Custom manifest path |
-| `GATEWAY_ROUTES_CONFIG_JSON` | empty | Inline JSON manifest |
 | `GATEWAY_WORKERS` | `1` | Uvicorn worker processes |
 | `GATEWAY_TASK_BACKEND` | `memory` | `memory` or `dynamodb` (background task state) |
 | `GATEWAY_TASK_TABLE` | `silvaengine-gateway-tasks` | DynamoDB task table (hash key `task_id`) |

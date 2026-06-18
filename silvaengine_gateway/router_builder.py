@@ -102,7 +102,6 @@ class ModuleSpec(BaseModel):
             "port",
             "workers",
             "routes_config_path",
-            "routes_config_json",
             "task_backend",
             "task_table",
             "task_ttl",
