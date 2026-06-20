@@ -147,3 +147,23 @@ modules:
         dispatch: "mcp_daemon_engine.main:dispatch_mcp_info"
         methods: ["GET"]
         auth: true
+
+  # ── AI Agent Core Engine ────────────────────────────────────────────
+  - name: ai_agent_core_engine
+    package: ai_agent_core_engine
+    transport: hybrid
+    config_class: "ai_agent_core_engine.handlers.config:Config"
+    config_init_style: dict
+    routes:
+      # GraphQL — AI agent queries/mutations (HTTP)
+      - path: "/{endpoint_id}/ai_agent_core_graphql"
+        handler_type: graphql
+        dispatch: "ai_agent_core_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+
+      # WebSocket — streaming AI agent responses
+      - path: "/{endpoint_id}/ai_agent_core_ws"
+        handler_type: websocket
+        dispatch: "ai_agent_core_engine.main:dispatch_ask_model"
+        auth: true

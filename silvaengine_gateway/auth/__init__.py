@@ -13,6 +13,13 @@ __all__ = [
     "get_current_user",
     "LocalUser",
     "load_users",
+    # WebSocket auth
+    "verify_websocket_token",
+    "verify_websocket_token_cognito",
+    "resolve_websocket_part_id",
+    "authenticate_websocket",
+    "WS_CLOSE_AUTH_FAILURE",
+    "WS_CLOSE_PARTITION_ERROR",
 ]
 
 _EXPORT_MODULES = {
@@ -25,6 +32,13 @@ _EXPORT_MODULES = {
     "get_current_user": ".middleware",
     "LocalUser": ".users",
     "load_users": ".users",
+    # WebSocket auth
+    "verify_websocket_token": ".websocket",
+    "verify_websocket_token_cognito": ".websocket",
+    "resolve_websocket_part_id": ".websocket",
+    "authenticate_websocket": ".websocket",
+    "WS_CLOSE_AUTH_FAILURE": ".websocket",
+    "WS_CLOSE_PARTITION_ERROR": ".websocket",
 }
 
 
