@@ -2,6 +2,7 @@
 """Tests for WebSocket route registration and auth behavior."""
 
 import logging
+from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 import pytest
@@ -301,3 +302,83 @@ def test_websocket_part_id_mismatch_rejected():
                 headers={"Part-Id": "header-tenant"},
             ):
                 pass
+
+
+def test_websocket_drains_stream_chunks_before_dispatch_result():
+    """Streaming chunks, including the end marker, arrive before result."""
+    cm = ConnectionManager()
+
+    def fake_dispatch(**params):
+        connection_id = params["connection_id"]
+        assert cm.send_to_connection(
+            connection_id,
+            {
+                "chunk_delta": "hello ",
+                "data_format": "text",
+                "is_message_end": False,
+                "index": 0,
+            },
+        ) is True
+        assert cm.send_to_connection(
+            connection_id,
+            {
+                "chunk_delta": "world",
+                "data_format": "text",
+                "is_message_end": True,
+                "index": 1,
+            },
+        ) is True
+        return {"status": "ok"}
+
+    module = ModuleSpec(
+        name="test_module",
+        package="test_module",
+        transport="hybrid",
+        routes=[
+            RouteSpec(
+                path="/{endpoint_id}/ws",
+                handler_type="websocket",
+                dispatch="test_module.main:fake_dispatch",
+                auth=True,
+            ),
+        ],
+    )
+
+    @asynccontextmanager
+    async def lifespan(app):
+        import asyncio
+
+        cm.set_event_loop(asyncio.get_running_loop())
+        yield
+
+    app = FastAPI(lifespan=lifespan)
+    with patch(
+        "silvaengine_gateway.router_builder.resolve_dispatch",
+        return_value=fake_dispatch,
+    ):
+        router = build_router_from_manifest(
+            [module],
+            connection_manager=cm,
+            auth_provider="local",
+        )
+    app.include_router(router)
+
+    token = create_local_jwt({"username": "testuser"})
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            f"/gpt/ws?token={token}&part_id=tenant1"
+        ) as ws:
+            assert ws.receive_json()["type"] == "connection_ack"
+            ws.send_json({"action": "ask_model", "arguments": {"prompt": "hi"}})
+
+            first = ws.receive_json()
+            second = ws.receive_json()
+            result = ws.receive_json()
+
+    assert first["chunk_delta"] == "hello "
+    assert first["is_message_end"] is False
+    assert second["chunk_delta"] == "world"
+    assert second["is_message_end"] is True
+    assert result == {"status": "ok"}
+

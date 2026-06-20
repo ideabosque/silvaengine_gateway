@@ -4,11 +4,13 @@
 Interactive WebSocket chatbot client for the SilvaEngine Gateway.
 
 Maintains a persistent WebSocket connection and lets you chat with an
-AI agent in a REPL-style loop.  Each message is sent as an ask_model
+AI agent in a REPL-style loop. Each message is sent as an ask_model
 request on the same thread_uuid, so the agent retains conversation
 context across turns.
 
-Streaming chunks are printed in real-time as they arrive.
+Streaming chunks are printed in real time as they arrive. A single
+background WebSocket reader owns ws.recv(), so late chunks can still be
+printed while the user prompt is open.
 
 Prerequisites:
     1. Gateway running:  python -m silvaengine_gateway
@@ -17,20 +19,8 @@ Prerequisites:
     4. DEFAULT_AGENT_UUID in .env (or pass --agent-uuid)
 
 Usage:
-    # Basic — all defaults from .env
     python silvaengine_gateway/tests/chat_websocket.py
-
-    # Custom agent + prompt
-    python silvaengine_gateway/tests/chat_websocket.py \\
-        --agent-uuid "agent-xxx" \\
-        --thread-uuid "thread-xxx"
-
-    # Non-default gateway
-    python silvaengine_gateway/tests/chat_websocket.py \\
-        --gateway-url ws://localhost \\
-        --gateway-port 8765
-
-    # Use admin static token (skip /auth/token)
+    python silvaengine_gateway/tests/chat_websocket.py --agent-uuid "agent-xxx"
     python silvaengine_gateway/tests/chat_websocket.py --token "$ADMIN_STATIC_TOKEN"
 
 Install websockets library:
@@ -46,6 +36,7 @@ import os
 import sys
 import time
 import uuid as _uuid
+from contextlib import suppress
 from pathlib import Path
 
 try:
@@ -55,7 +46,6 @@ except ImportError:
     sys.exit(1)
 
 
-# ANSI colors for a nicer terminal experience
 class C:
     DIM = "\033[2m"
     BOLD = "\033[1m"
@@ -102,21 +92,128 @@ async def get_auth_token(base_url: str, username: str, password: str) -> str:
         sys.exit(1)
 
 
-async def receive_streaming_response(ws, timeout=120, idle_timeout=8):
-    """Receive streaming chunks with real-time printing and idle-timeout
-    stream completion.
+async def websocket_reader(ws, incoming_queue):
+    """Read WebSocket frames into a queue.
 
-    Prints text chunks inline in real-time as they arrive.  If no new
-    chunks arrive for ``idle_timeout`` seconds after the last chunk,
-    the stream is treated as complete (the agent handler does not always
-    send ``is_message_end=true``).  After completion, drains the trailing
-    dispatch result message silently so it doesn't block the next turn.
+    The websockets client only allows one coroutine to call ws.recv() at a
+    time. This reader is the single owner; prompt handling and response
+    handling consume parsed messages from incoming_queue.
+    """
+    while True:
+        raw = await ws.recv()
+        try:
+            message = json.loads(raw)
+        except json.JSONDecodeError:
+            message = {"type": "raw", "data": raw}
+        await incoming_queue.put(message)
 
-    Args:
-        ws: WebSocket connection.
-        timeout: Maximum total wait per response (seconds).
-        idle_timeout: If no chunk arrives for this many seconds after the
-            last chunk, treat the stream as complete.
+
+def print_stream_chunk(message):
+    """Print one stream chunk and return (delta, is_end)."""
+    delta = message.get("chunk_delta", "")
+    data_format = message.get("data_format", "text")
+    is_end = message.get("is_message_end", False)
+
+    if data_format == "text":
+        print(delta, end="", flush=True)
+    elif data_format == "xml":
+        print(f"{C.DIM}{delta}{C.RESET}", end="", flush=True)
+    else:
+        print(f"{C.DIM}[{data_format}]{delta}{C.RESET}", end="", flush=True)
+
+    if is_end:
+        print(
+            f"\n{C.GREEN}[is_message_end=True - stream complete]{C.RESET}",
+            flush=True,
+        )
+
+    return delta, is_end
+
+
+def print_unsolicited_stream_message(message, active):
+    """Print frames that arrive while the user prompt is open."""
+    if "chunk_delta" in message:
+        if not active:
+            print(f"\n{C.MAGENTA}Agent>{C.RESET} ", end="", flush=True)
+            active = True
+        _, is_end = print_stream_chunk(message)
+        return False if is_end else active
+
+    if message.get("type") == "error":
+        print(f"\n{C.RED}ERROR: {message.get('detail')}{C.RESET}", flush=True)
+        return False
+
+    if active and ("result" in message or "status" in message):
+        return False
+
+    return active
+
+
+async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=8):
+    """Read user input while continuing to receive late stream chunks.
+
+    If the user presses Enter while a late stream is still active, the entered
+    prompt is held until the stream ends or goes idle. This avoids sending a new
+    ask_model request while the previous agent response is still arriving.
+    """
+    loop = asyncio.get_running_loop()
+    input_future = loop.run_in_executor(None, lambda: input(prompt_text))
+    active_stream = False
+    pending_prompt = None
+
+    while True:
+        if pending_prompt is not None:
+            if not active_stream:
+                return pending_prompt
+            try:
+                message = await asyncio.wait_for(
+                    incoming_queue.get(),
+                    timeout=idle_timeout,
+                )
+            except asyncio.TimeoutError:
+                print(
+                    f"\n{C.YELLOW}[stream still active - idle timeout]{C.RESET}",
+                    flush=True,
+                )
+                return pending_prompt
+            active_stream = print_unsolicited_stream_message(
+                message,
+                active_stream,
+            )
+            continue
+
+        message_task = asyncio.create_task(incoming_queue.get())
+        done, pending = await asyncio.wait(
+            {input_future, message_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if input_future in done:
+            pending_prompt = input_future.result()
+            if message_task in done:
+                message = message_task.result()
+                was_active = active_stream
+                active_stream = print_unsolicited_stream_message(
+                    message,
+                    active_stream,
+                )
+                if was_active and not active_stream and pending_prompt is None:
+                    print(prompt_text, end="", flush=True)
+            else:
+                message_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await message_task
+            continue
+
+        message = message_task.result()
+        was_active = active_stream
+        active_stream = print_unsolicited_stream_message(message, active_stream)
+        if was_active and not active_stream:
+            print(prompt_text, end="", flush=True)
+
+
+async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8):
+    """Receive streaming chunks with real-time printing.
 
     Returns (full_text, chunk_count, elapsed).
     """
@@ -124,70 +221,56 @@ async def receive_streaming_response(ws, timeout=120, idle_timeout=8):
     chunk_count = 0
     started = time.time()
     last_chunk_time = None
+    completed = False
 
     try:
         while True:
-            # Use idle_timeout after first chunk, full timeout before
             recv_timeout = idle_timeout if last_chunk_time else timeout
-            raw = await asyncio.wait_for(ws.recv(), timeout=recv_timeout)
-            message = json.loads(raw)
+            message = await asyncio.wait_for(
+                incoming_queue.get(),
+                timeout=recv_timeout,
+            )
 
             if "chunk_delta" in message:
                 chunk_count += 1
                 last_chunk_time = time.time()
-                delta = message["chunk_delta"]
-                data_format = message.get("data_format", "text")
-                is_end = message.get("is_message_end", False)
-
-                if data_format == "text":
-                    full_text += delta
-                    print(delta, end="", flush=True)
-                elif data_format == "xml":
-                    full_text += delta
-                    print(f"{C.DIM}{delta}{C.RESET}", end="", flush=True)
-                else:
-                    full_text += delta
-                    print(f"{C.DIM}[{data_format}]{delta}{C.RESET}", end="", flush=True)
+                delta, is_end = print_stream_chunk(message)
+                full_text += delta
 
                 if is_end:
-                    print(f"\n{C.GREEN}[is_message_end=True — stream complete]{C.RESET}", flush=True)
-                    # Explicit end marker — stream is done.
-                    # Briefly drain the trailing dispatch result message
-                    # (sent by the gateway after run_in_executor returns)
-                    # so it doesn't block the next turn. Use a short timeout
-                    # since we already know the stream is complete.
+                    completed = True
                     try:
-                        await asyncio.wait_for(ws.recv(), timeout=5)
+                        await asyncio.wait_for(incoming_queue.get(), timeout=5)
                     except (asyncio.TimeoutError, Exception):
                         pass
                     break
 
             elif message.get("type") == "error":
                 print(f"\n{C.RED}ERROR: {message.get('detail')}{C.RESET}")
+                completed = True
                 break
 
-            elif chunk_count > 0 and (
-                "result" in message or "status" in message
-            ):
-                # Dispatch result arrived without is_message_end — stream
-                # is done. Consume and break.
+            elif chunk_count > 0 and ("result" in message or "status" in message):
+                completed = True
                 break
 
             else:
-                # Unknown message before stream end — skip silently
                 pass
 
     except asyncio.TimeoutError:
         if chunk_count == 0:
-            print(f"\n{C.YELLOW}[no response — timeout after {time.time() - started:.0f}s]{C.RESET}")
+            print(
+                f"\n{C.YELLOW}[no response - timeout after {time.time() - started:.0f}s]{C.RESET}"
+            )
         else:
-            print(f"\n{C.YELLOW}[is_message_end not received — idle timeout after {time.time() - started:.0f}s, {chunk_count} chunks]{C.RESET}")
+            print(
+                f"\n{C.YELLOW}[is_message_end not received - idle timeout after "
+                f"{time.time() - started:.0f}s, {chunk_count} chunks]{C.RESET}"
+            )
 
-    # If we exited via idle timeout (no is_message_end), drain the
-    # dispatch result so it doesn't block the next turn.
-    if last_chunk_time and chunk_count > 0:
+    if not completed and last_chunk_time and chunk_count > 0:
         try:
-            await asyncio.wait_for(ws.recv(), timeout=5)
+            await asyncio.wait_for(incoming_queue.get(), timeout=5)
         except (asyncio.TimeoutError, Exception):
             pass
 
@@ -208,7 +291,6 @@ async def chat_loop(
     print(f"\n{C.DIM}Connecting to {ws_uri.split('?')[0]}...{C.RESET}")
 
     async with websockets.connect(ws_uri, max_size=2**20) as ws:
-        # Receive connection_ack
         ack = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
         if ack.get("type") != "connection_ack":
             print(f"{C.RED}ERROR: Expected connection_ack, got: {ack}{C.RESET}")
@@ -225,92 +307,91 @@ async def chat_loop(
         print(f"{C.CYAN}Type your message and press Enter. Commands:{C.RESET}")
         print(f"  {C.YELLOW}/quit{C.RESET}          - Exit the chat")
         print(f"  {C.YELLOW}/new-thread{C.RESET}    - Start a new conversation thread")
-        print(f"  {C.YELLOW}/retry{C.RESET}        - Re-send the last message")
-        print(f"  {C.YELLOW}/stats{C.RESET}        - Show connection stats")
+        print(f"  {C.YELLOW}/retry{C.RESET}         - Re-send the last message")
+        print(f"  {C.YELLOW}/stats{C.RESET}         - Show connection stats")
         print()
 
         turn = 0
         last_message = None
+        incoming_queue = asyncio.Queue()
+        reader_task = asyncio.create_task(websocket_reader(ws, incoming_queue))
 
-        while True:
-            try:
-                # Read user input (blocking — run in executor to avoid
-                # blocking the event loop)
-                loop = asyncio.get_event_loop()
-                prompt = await loop.run_in_executor(
-                    None,
-                    lambda: input(
-                        f"{C.BOLD}{C.CYAN}[turn {turn + 1}]{C.RESET} {C.GREEN}You>{C.RESET} "
-                    ),
-                )
-            except (EOFError, KeyboardInterrupt):
-                print(f"\n{C.DIM}Goodbye!{C.RESET}")
-                break
+        try:
+            while True:
+                try:
+                    prompt = await read_prompt_while_receiving(
+                        f"{C.BOLD}{C.CYAN}[turn {turn + 1}]{C.RESET} {C.GREEN}You>{C.RESET} ",
+                        incoming_queue,
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    print(f"\n{C.DIM}Goodbye!{C.RESET}")
+                    break
 
-            prompt = prompt.strip()
-            if not prompt:
-                continue
-
-            # Handle commands
-            if prompt in ("/quit", "/exit", "/q"):
-                print(f"{C.DIM}Goodbye!{C.RESET}")
-                break
-
-            if prompt == "/new-thread":
-                thread_uuid = str(_uuid.uuid4())
-                turn = 0
-                print(f"\n{C.YELLOW}Started new thread: {thread_uuid}{C.RESET}\n")
-                continue
-
-            if prompt == "/retry":
-                if last_message is None:
-                    print(f"{C.YELLOW}No previous message to retry.{C.RESET}")
+                prompt = prompt.strip()
+                if not prompt:
                     continue
-                prompt = last_message
-                print(f"{C.DIM}Retrying: {prompt}{C.RESET}")
 
-            if prompt == "/stats":
-                print(f"\n{C.DIM}Connection stats:{C.RESET}")
-                print(f"  connection_id : {connection_id}")
-                print(f"  thread_uuid   : {thread_uuid}")
-                print(f"  agent_uuid    : {agent_uuid}")
-                print(f"  turns         : {turn}")
-                print()
-                continue
+                if prompt in ("/quit", "/exit", "/q"):
+                    print(f"{C.DIM}Goodbye!{C.RESET}")
+                    break
 
-            # Send ask_model request
-            turn += 1
-            last_message = prompt
+                if prompt == "/new-thread":
+                    thread_uuid = str(_uuid.uuid4())
+                    turn = 0
+                    print(f"\n{C.YELLOW}Started new thread: {thread_uuid}{C.RESET}\n")
+                    continue
 
-            request = {
-                "action": "ask_model",
-                "arguments": {
-                    "agent_uuid": agent_uuid,
-                    "thread_uuid": thread_uuid,
-                    "user_query": prompt,
-                    "updated_by": updated_by,
-                    "stream": stream,
-                },
-            }
+                if prompt == "/retry":
+                    if last_message is None:
+                        print(f"{C.YELLOW}No previous message to retry.{C.RESET}")
+                        continue
+                    prompt = last_message
+                    print(f"{C.DIM}Retrying: {prompt}{C.RESET}")
 
-            await ws.send(json.dumps(request))
+                if prompt == "/stats":
+                    print(f"\n{C.DIM}Connection stats:{C.RESET}")
+                    print(f"  connection_id : {connection_id}")
+                    print(f"  thread_uuid   : {thread_uuid}")
+                    print(f"  agent_uuid    : {agent_uuid}")
+                    print(f"  turns         : {turn}")
+                    print()
+                    continue
 
-            # Receive streaming response
-            print(f"{C.MAGENTA}Agent>{C.RESET} ", end="", flush=True)
+                turn += 1
+                last_message = prompt
 
-            full_text, chunk_count, elapsed = await receive_streaming_response(
-                ws, timeout=timeout
-            )
+                request = {
+                    "action": "ask_model",
+                    "arguments": {
+                        "agent_uuid": agent_uuid,
+                        "thread_uuid": thread_uuid,
+                        "user_query": prompt,
+                        "updated_by": updated_by,
+                        "stream": stream,
+                    },
+                }
 
-            print(f" {C.DIM}[{chunk_count} chunks, {elapsed:.1f}s]{C.RESET}")
-            print()
+                await ws.send(json.dumps(request))
 
-            # If we got no response at all, something went wrong
-            if not full_text and chunk_count == 0:
-                print(
-                    f"{C.YELLOW}No response received. "
-                    f"Check gateway logs for errors.{C.RESET}\n"
+                print(f"{C.MAGENTA}Agent>{C.RESET} ", end="", flush=True)
+
+                full_text, chunk_count, elapsed = await receive_streaming_response(
+                    incoming_queue,
+                    timeout=timeout,
                 )
+
+                print(f" {C.DIM}[{chunk_count} chunks, {elapsed:.1f}s]{C.RESET}")
+                print()
+
+                if not full_text and chunk_count == 0:
+                    print(
+                        f"{C.YELLOW}No response received. "
+                        f"Check gateway logs for errors.{C.RESET}\n"
+                    )
+        finally:
+            reader_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader_task
 
 
 def main():
@@ -381,11 +462,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Load .env
     load_env()
 
-    # Re-read defaults from env after loading .env (argparse defaults are
-    # evaluated at parser construction time, before load_env() runs)
     endpoint_id = args.endpoint_id or os.getenv("endpoint_id", "gpt")
     part_id = args.part_id or os.getenv("part_id", "nestaging")
     agent_uuid = args.agent_uuid or os.getenv("DEFAULT_AGENT_UUID")
@@ -402,16 +480,13 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    # Generate thread_uuid if not provided
     thread_uuid = args.thread_uuid
     if not thread_uuid:
         thread_uuid = str(_uuid.uuid4())
 
-    # Build WebSocket URI
     base_url = (args.gateway_url or "ws://localhost").rstrip("/")
     ws_base = f"{base_url}:{port}"
 
-    # Get token
     if args.token:
         token = args.token
         print(f"{C.DIM}Using provided token: {token[:20]}...{C.RESET}")
@@ -420,13 +495,11 @@ def main():
         token = asyncio.run(get_auth_token(ws_base, username, password))
         print(f"{C.DIM}Got token: {token[:20]}...{C.RESET}")
 
-    # Build full WebSocket URI
     ws_uri = (
         f"{ws_base}/{endpoint_id}/ai_agent_core_ws"
         f"?token={token}&part_id={part_id}"
     )
 
-    # Run the chat loop
     try:
         asyncio.run(
             chat_loop(

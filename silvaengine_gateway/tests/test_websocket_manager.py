@@ -86,6 +86,31 @@ class TestConnectionManager:
         t.join(timeout=2)
         loop.close()
 
+
+    def test_connection_manager_drain_pending_sends(self, manager):
+        """Drain waits until scheduled sends have reached the WebSocket."""
+        sent_payloads = []
+
+        async def run_case():
+            manager.set_event_loop(asyncio.get_running_loop())
+
+            ws = MagicMock()
+
+            async def send_text(payload):
+                await asyncio.sleep(0.01)
+                sent_payloads.append(payload)
+
+            ws.send_text = send_text
+            manager.register("conn-1", ws)
+
+            assert manager.send_to_connection("conn-1", {"index": 1}) is True
+            assert manager.send_to_connection("conn-1", {"index": 2}) is True
+            assert await manager.drain_pending_sends("conn-1", timeout=1.0) is True
+
+        asyncio.run(run_case())
+
+        assert [json.loads(payload)["index"] for payload in sent_payloads] == [1, 2]
+
     def test_connection_manager_send_string_data(self, manager):
         """String data is sent as-is (no JSON serialization)."""
         ws = MagicMock()

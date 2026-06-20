@@ -22,6 +22,8 @@ import asyncio
 import json
 import logging
 import threading
+import time
+from concurrent.futures import Future
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket
@@ -29,8 +31,10 @@ from fastapi import WebSocket
 logger = logging.getLogger(__name__)
 
 
-def _log_send_error(future: "asyncio.Future[Any]") -> None:
+def _log_send_error(future: Future[Any]) -> None:
     """Done-callback that logs exceptions from fire-and-forget sends."""
+    if future.cancelled():
+        return
     exc = future.exception()
     if exc is not None:
         logger.error("WebSocket send failed: %s", exc, exc_info=exc)
@@ -47,6 +51,7 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self._connections: Dict[str, WebSocket] = {}
+        self._pending_sends: Dict[str, List[Future[Any]]] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = threading.RLock()
 
@@ -62,11 +67,13 @@ class ConnectionManager:
         """Associate *connection_id* with *websocket*."""
         with self._lock:
             self._connections[connection_id] = websocket
+            self._pending_sends.setdefault(connection_id, [])
 
     def unregister(self, connection_id: str) -> None:
         """Remove *connection_id* (e.g. on disconnect or send failure)."""
         with self._lock:
             self._connections.pop(connection_id, None)
+            self._pending_sends.pop(connection_id, None)
 
     # ── Send ─────────────────────────────────────────────────────────
 
@@ -93,8 +100,56 @@ class ConnectionManager:
         future = asyncio.run_coroutine_threadsafe(
             websocket.send_text(payload), loop
         )
-        future.add_done_callback(_log_send_error)
+        with self._lock:
+            self._pending_sends.setdefault(connection_id, []).append(future)
+
+        def _on_done(done_future: Future[Any]) -> None:
+            with self._lock:
+                pending = self._pending_sends.get(connection_id)
+                if pending is not None:
+                    try:
+                        pending.remove(done_future)
+                    except ValueError:
+                        pass
+            _log_send_error(done_future)
+
+        future.add_done_callback(_on_done)
         return True
+
+    async def drain_pending_sends(
+        self,
+        connection_id: str,
+        timeout: float = 5.0,
+    ) -> bool:
+        """Wait for all currently queued sends for *connection_id* to finish.
+
+        Streaming sends are scheduled from sync worker threads onto the
+        FastAPI event loop. WebSocket route handlers call this after dispatch
+        returns so chunk frames are flushed before the trailing dispatch result
+        is sent to the client.
+        """
+        deadline = time.monotonic() + timeout
+
+        while True:
+            with self._lock:
+                pending = list(self._pending_sends.get(connection_id, []))
+
+            pending = [future for future in pending if not future.done()]
+            if not pending:
+                return True
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+
+            wrapped = [asyncio.wrap_future(future) for future in pending]
+            done, _pending = await asyncio.wait(
+                wrapped,
+                timeout=remaining,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+            if len(done) != len(wrapped):
+                return False
 
     # ── Inspection ───────────────────────────────────────────────────
 
@@ -115,6 +170,7 @@ class ConnectionManager:
         with self._lock:
             connections = list(self._connections.items())
             self._connections.clear()
+            self._pending_sends.clear()
 
         for conn_id, ws in connections:
             try:

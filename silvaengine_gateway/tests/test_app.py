@@ -2,6 +2,7 @@
 """Tests for gateway app factory and lifespan."""
 
 import pytest
+from jose import jwt
 from fastapi.testclient import TestClient
 
 from silvaengine_gateway.app import create_app
@@ -80,3 +81,50 @@ def test_build_setting_from_env_uses_default_invoker_class_names(monkeypatch):
         "class_name": "AIAgentCoreEngine",
     }
     assert "dispatch_graphql" not in functs_on_local
+
+
+def test_build_setting_from_env_internal_mcp_keeps_explicit_bearer(monkeypatch):
+    """Existing internal_mcp_bearer_token wins over generated credentials."""
+    monkeypatch.setenv("internal_mcp_base_url", "http://localhost:8765")
+    monkeypatch.setenv("part_id", "nestaging")
+    monkeypatch.setenv("internal_mcp_bearer_token", "explicit-token")
+    monkeypatch.setenv("internal_mcp_token_username", "admin")
+    monkeypatch.setenv("internal_mcp_token_password", "admin123")
+    monkeypatch.delenv("FUNCTS_ON_LOCAL_OVERRIDES", raising=False)
+
+    from silvaengine_gateway.app import build_setting_from_env
+
+    setting = build_setting_from_env()
+
+    assert setting["internal_mcp"]["base_url"] == "http://localhost:8765/{endpoint_id}/mcp"
+    assert "Part-Id" not in setting["internal_mcp"]["headers"]
+    assert setting["internal_mcp"]["bearer_token"] == "explicit-token"
+
+
+def test_build_setting_from_env_internal_mcp_generates_local_admin_token(monkeypatch):
+    """Internal MCP username/password can generate a local gateway JWT."""
+    monkeypatch.setenv("internal_mcp_base_url", "http://localhost:8765")
+    monkeypatch.setenv("part_id", "nestaging")
+    monkeypatch.delenv("internal_mcp_bearer_token", raising=False)
+    monkeypatch.setenv("GATEWAY_AUTH_PROVIDER", "local")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin123")
+    monkeypatch.delenv("ADMIN_STATIC_TOKEN", raising=False)
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("JWT_ALGORITHM", "HS256")
+    monkeypatch.setenv("internal_mcp_token_username", "admin")
+    monkeypatch.setenv("internal_mcp_token_password", "admin123")
+    monkeypatch.delenv("FUNCTS_ON_LOCAL_OVERRIDES", raising=False)
+
+    from silvaengine_gateway.app import build_setting_from_env
+
+    setting = build_setting_from_env()
+    assert setting["internal_mcp"]["base_url"] == "http://localhost:8765/{endpoint_id}/mcp"
+    assert "Part-Id" not in setting["internal_mcp"]["headers"]
+    token = setting["internal_mcp"]["bearer_token"]
+    claims = jwt.decode(token, "test-secret", algorithms=["HS256"])
+
+    assert claims["username"] == "admin"
+    assert claims["role"] == "admin"
+    assert claims["perm"] is True
+

@@ -725,13 +725,20 @@ def _make_websocket_handler(
                     })
                     continue
 
-                # Yield control to the event loop so any pending
-                # ConnectionManager sends (scheduled via
-                # asyncio.run_coroutine_threadsafe during streaming,
-                # including the is_message_end=True marker) are
-                # delivered before we send the dispatch result.
-                # 50ms is enough for the event loop to drain the send queue.
-                await asyncio.sleep(0.05)
+                # Wait for pending ConnectionManager sends scheduled by
+                # streaming dispatch code before sending the trailing result.
+                if connection_manager is not None and hasattr(
+                    connection_manager, "drain_pending_sends"
+                ):
+                    drained = await connection_manager.drain_pending_sends(
+                        connection_id,
+                        timeout=5.0,
+                    )
+                    if not drained:
+                        logger.warning(
+                            "Timed out draining WebSocket sends for %s",
+                            connection_id,
+                        )
 
                 # Send the dispatch result back (if any)
                 # Streaming chunks were already delivered via ConnectionManager

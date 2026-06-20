@@ -264,6 +264,133 @@ def _module_invoker_class_name(module: ModuleSpec) -> str:
 
     return "".join(part.capitalize() for part in module.package.split("_"))
 
+def _internal_mcp_base_url() -> str:
+    """Return the configured internal MCP gateway base URL."""
+    return os.getenv("internal_mcp_base_url", "").rstrip("/")
+
+
+def _build_internal_mcp_headers() -> Dict[str, Any]:
+    """Build static headers shared by all internal MCP calls.
+
+    The tenant Part-Id is added later by ai_agent_core from request context.
+    """
+    return {
+        "x-api-key": os.getenv("x-api-key"),
+        "Content-Type": "application/json",
+    }
+
+
+def _internal_mcp_token_url(base_url: str) -> str:
+    """Build the auth token URL from the internal MCP base URL."""
+    return f"{base_url}/auth/token" if base_url else ""
+
+
+def _generate_local_internal_mcp_token(username: str, password: str) -> str:
+    """Generate an internal MCP bearer token from local gateway credentials."""
+    admin_username = os.getenv("ADMIN_USERNAME", "")
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+    admin_static_token = os.getenv("ADMIN_STATIC_TOKEN", "")
+
+    if admin_username and admin_password:
+        if username == admin_username and password == admin_password:
+            if admin_static_token:
+                return admin_static_token
+            from jose import jwt
+
+            payload = {
+                "username": admin_username,
+                "role": "admin",
+                "perm": True,
+            }
+            return jwt.encode(
+                payload,
+                os.getenv("JWT_SECRET_KEY", "CHANGEME"),
+                algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
+            )
+
+    local_user_file = os.getenv("LOCAL_USER_FILE")
+    if local_user_file:
+        import pendulum
+        from jose import jwt
+
+        from .auth.users import load_users
+
+        user = load_users(local_user_file).get(username)
+        if user and user.verify(password):
+            exp = pendulum.now("UTC").add(
+                minutes=int(os.getenv("ACCESS_TOKEN_EXP", "15"))
+            )
+            return jwt.encode(
+                {"username": user.username, "roles": user.roles, "exp": exp},
+                os.getenv("JWT_SECRET_KEY", "CHANGEME"),
+                algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
+            )
+
+    return ""
+
+
+def _fetch_internal_mcp_token(token_url: str, username: str, password: str) -> str:
+    """Fetch an OAuth-style token from an external auth endpoint."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+
+    data = urllib.parse.urlencode(
+        {"username": username, "password": password}
+    ).encode()
+    req = urllib.request.Request(
+        token_url,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        body = _json.loads(resp.read())
+    return body.get("access_token") or body.get("token") or ""
+
+
+def _resolve_internal_mcp_bearer_token(base_url: str) -> str:
+    """Resolve the bearer token used by ai_agent_core internal MCP calls."""
+    bearer_token = os.getenv("internal_mcp_bearer_token", "")
+    if bearer_token:
+        return bearer_token
+
+    username = os.getenv("internal_mcp_token_username", "")
+    password = os.getenv("internal_mcp_token_password", "")
+    if not username or not password:
+        return ""
+
+    if os.getenv("GATEWAY_AUTH_PROVIDER", os.getenv("AUTH_PROVIDER", "local")) == "local":
+        return _generate_local_internal_mcp_token(username, password)
+
+    token_url = _internal_mcp_token_url(base_url)
+    if not token_url:
+        return ""
+
+    try:
+        return _fetch_internal_mcp_token(token_url, username, password)
+    except Exception as exc:
+        logger.warning("Failed to fetch internal MCP bearer token: %s", exc)
+        return ""
+
+
+def _build_internal_mcp_config() -> Dict[str, Any] | None:
+    """Build ai_agent_core internal MCP config from one env contract.
+
+    URL shape follows the gateway routing contract: endpoint_id is formatted
+    into the path by ai_agent_core. Tenant part_id is added there from request
+    context as the Part-Id header.
+    """
+    base_url = _internal_mcp_base_url()
+    if not base_url:
+        return None
+
+    return {
+        "base_url": f"{base_url}/{{endpoint_id}}/mcp",
+        "bearer_token": _resolve_internal_mcp_bearer_token(base_url),
+        "headers": _build_internal_mcp_headers(),
+    }
+
+
 def _warn_multiprocess_compat(
     setting: Dict[str, Any],
     manifest: List[ModuleSpec],
@@ -568,16 +695,7 @@ def build_setting_from_env() -> Dict[str, Any]:
         "funct_extract_path": os.getenv("FUNCT_EXTRACT_PATH"),
         # Internal MCP server — forwarded to ai_agent_core_engine.handlers.config:Config
         # Used by _get_agent() to fetch agent MCP server config at runtime.
-        "internal_mcp": {
-            "base_url": os.getenv("mcp_server_url"),
-            "bearer_token": os.getenv("bearer_token"),
-            "headers": {
-                "x-api-key": os.getenv("x-api-key"),
-                "Content-Type": "application/json",
-            },
-        }
-        if os.getenv("mcp_server_url")
-        else None,
+        "internal_mcp": _build_internal_mcp_config(),
         # Shared-store backends (multi-process support)
         "task_backend": os.getenv("GATEWAY_TASK_BACKEND", "memory"),
         "task_table": os.getenv("GATEWAY_TASK_TABLE"),
