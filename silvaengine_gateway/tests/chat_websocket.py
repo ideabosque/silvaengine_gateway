@@ -301,69 +301,74 @@ async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=
 async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8, debug_chunks=False):
     """Receive streaming chunks with real-time printing.
 
-    Returns (full_text, chunk_count, elapsed).
+    Idle gaps are common while tools run. Do not return to the user prompt
+    until the stream ends or the overall timeout is reached.
     """
     full_text = ""
     chunk_count = 0
     started = time.time()
     last_chunk_time = None
-    completed = False
     stream_state = {}
 
-    try:
-        while True:
-            recv_timeout = idle_timeout if last_chunk_time else timeout
+    while True:
+        elapsed = time.time() - started
+        remaining_timeout = timeout - elapsed
+        if remaining_timeout <= 0:
+            if chunk_count == 0:
+                print(f"\n{C.YELLOW}[no response - timeout after {elapsed:.0f}s]{C.RESET}")
+            else:
+                print(
+                    f"\n{C.YELLOW}[stream did not finish after {elapsed:.0f}s, "
+                    f"{chunk_count} chunks]{C.RESET}"
+                )
+            break
+
+        recv_timeout = (
+            min(idle_timeout, remaining_timeout)
+            if last_chunk_time
+            else remaining_timeout
+        )
+        try:
             message = await asyncio.wait_for(
                 incoming_queue.get(),
                 timeout=recv_timeout,
             )
+        except asyncio.TimeoutError:
+            if chunk_count > 0:
+                print(
+                    f"\n{C.YELLOW}[waiting for stream end - "
+                    f"{time.time() - started:.0f}s, {chunk_count} chunks]{C.RESET}",
+                    flush=True,
+                )
+                continue
+            print(
+                f"\n{C.YELLOW}[no response yet - waiting up to {timeout}s]{C.RESET}",
+                flush=True,
+            )
+            continue
 
-            if "chunk_delta" in message:
-                chunk_count += 1
-                last_chunk_time = time.time()
-                delta, is_end = print_stream_chunk(message, stream_state, debug_chunks)
-                full_text += delta
+        if "chunk_delta" in message:
+            chunk_count += 1
+            last_chunk_time = time.time()
+            delta, is_end = print_stream_chunk(message, stream_state, debug_chunks)
+            full_text += delta
 
-                if is_end:
-                    completed = True
-                    try:
-                        await asyncio.wait_for(incoming_queue.get(), timeout=5)
-                    except (asyncio.TimeoutError, Exception):
-                        pass
-                    break
-
-            elif message.get("type") == "error":
-                print(f"\n{C.RED}ERROR: {message.get('detail')}{C.RESET}")
-                completed = True
+            if is_end:
+                try:
+                    await asyncio.wait_for(incoming_queue.get(), timeout=5)
+                except (asyncio.TimeoutError, Exception):
+                    pass
                 break
 
-            elif chunk_count > 0 and ("result" in message or "status" in message):
-                completed = True
-                break
+        elif message.get("type") == "error":
+            print(f"\n{C.RED}ERROR: {message.get('detail')}{C.RESET}")
+            break
 
-            else:
-                pass
-
-    except asyncio.TimeoutError:
-        if chunk_count == 0:
-            print(
-                f"\n{C.YELLOW}[no response - timeout after {time.time() - started:.0f}s]{C.RESET}"
-            )
-        else:
-            print(
-                f"\n{C.YELLOW}[is_message_end not received - idle timeout after "
-                f"{time.time() - started:.0f}s, {chunk_count} chunks]{C.RESET}"
-            )
-
-    if not completed and last_chunk_time and chunk_count > 0:
-        try:
-            await asyncio.wait_for(incoming_queue.get(), timeout=5)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        elif chunk_count > 0 and ("result" in message or "status" in message):
+            break
 
     elapsed = time.time() - started
     return full_text, chunk_count, elapsed
-
 
 async def chat_loop(
     ws_uri: str,
