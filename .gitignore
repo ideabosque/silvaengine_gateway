@@ -223,3 +223,7 @@ __marimo__/
 .claude/
 AGENTS.md
 CLAUDE.md
+# Agent / tooling scratch dirs (never commit)
+.codex/
+.agents/
+.pytest-tmp/
