@@ -108,18 +108,94 @@ async def websocket_reader(ws, incoming_queue):
         await incoming_queue.put(message)
 
 
-def print_stream_chunk(message):
+def _find_reasoning_marker(message):
+    """Return a reasoning marker such as rs#1 when present in frame metadata."""
+    for key in ("suffix", "message_group_id", "data_format", "type"):
+        value = str(message.get(key) or "")
+        lowered = value.lower()
+        marker_index = lowered.find("rs#")
+        if marker_index >= 0:
+            marker = value[marker_index:].split("-", 1)[0].split("/", 1)[0]
+            return marker.strip()
+        if "reason" in lowered:
+            return value.strip() or "reasoning"
+
+    for key, value in message.items():
+        if key == "chunk_delta":
+            continue
+        text = str(value)
+        lowered = text.lower()
+        marker_index = lowered.find("rs#")
+        if marker_index >= 0:
+            marker = text[marker_index:].split("-", 1)[0].split("/", 1)[0]
+            return marker.strip()
+        if "reason" in lowered:
+            return text.strip() or "reasoning"
+
+    return ""
+
+
+def is_reasoning_chunk(message):
+    """Return True when a stream frame appears to carry reasoning tokens."""
+    return bool(_find_reasoning_marker(message))
+
+
+def reasoning_label(message):
+    """Build a compact label for reasoning stream chunks."""
+    marker = _find_reasoning_marker(message)
+    return f"REASONING {marker}" if marker else "REASONING"
+
+
+def print_stream_boundary(message, stream_state):
+    """Print a visible lane switch when reasoning starts or answer resumes."""
+    is_reasoning = is_reasoning_chunk(message)
+    marker = _find_reasoning_marker(message) if is_reasoning else ""
+    previous = stream_state.get("marker")
+    current = (is_reasoning, marker)
+
+    if current == previous:
+        return
+
+    if is_reasoning:
+        print(
+            f"\n{C.YELLOW}>>> {reasoning_label(message)}>{C.RESET} ",
+            end="",
+            flush=True,
+        )
+    elif previous and previous[0]:
+        print(f"\n{C.MAGENTA}Agent>{C.RESET} ", end="", flush=True)
+
+    stream_state["marker"] = current
+
+
+def print_stream_chunk(message, stream_state=None, debug_chunks=False):
     """Print one stream chunk and return (delta, is_end)."""
     delta = message.get("chunk_delta", "")
     data_format = message.get("data_format", "text")
     is_end = message.get("is_message_end", False)
+    if stream_state is None:
+        stream_state = {}
+
+    if debug_chunks:
+        metadata = {
+            key: value
+            for key, value in message.items()
+            if key != "chunk_delta"
+        }
+        print(f"\n{C.DIM}[chunk metadata] {json.dumps(metadata, default=str)}{C.RESET}", flush=True)
+
+    print_stream_boundary(message, stream_state)
 
     if data_format == "text":
         print(delta, end="", flush=True)
     elif data_format == "xml":
         print(f"{C.DIM}{delta}{C.RESET}", end="", flush=True)
     else:
-        print(f"{C.DIM}[{data_format}]{delta}{C.RESET}", end="", flush=True)
+        print(
+            f"{C.DIM}[{data_format}]{delta}{C.RESET}",
+            end="",
+            flush=True,
+        )
 
     if is_end:
         print(
@@ -130,13 +206,13 @@ def print_stream_chunk(message):
     return delta, is_end
 
 
-def print_unsolicited_stream_message(message, active):
+def print_unsolicited_stream_message(message, active, stream_state, debug_chunks=False):
     """Print frames that arrive while the user prompt is open."""
     if "chunk_delta" in message:
-        if not active:
+        if not active and not is_reasoning_chunk(message):
             print(f"\n{C.MAGENTA}Agent>{C.RESET} ", end="", flush=True)
-            active = True
-        _, is_end = print_stream_chunk(message)
+        active = True
+        _, is_end = print_stream_chunk(message, stream_state, debug_chunks)
         return False if is_end else active
 
     if message.get("type") == "error":
@@ -149,7 +225,7 @@ def print_unsolicited_stream_message(message, active):
     return active
 
 
-async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=8):
+async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=8, debug_chunks=False):
     """Read user input while continuing to receive late stream chunks.
 
     If the user presses Enter while a late stream is still active, the entered
@@ -159,6 +235,7 @@ async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=
     loop = asyncio.get_running_loop()
     input_future = loop.run_in_executor(None, lambda: input(prompt_text))
     active_stream = False
+    stream_state = {}
     pending_prompt = None
 
     while True:
@@ -179,6 +256,8 @@ async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=
             active_stream = print_unsolicited_stream_message(
                 message,
                 active_stream,
+                stream_state,
+                debug_chunks,
             )
             continue
 
@@ -196,6 +275,8 @@ async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=
                 active_stream = print_unsolicited_stream_message(
                     message,
                     active_stream,
+                    stream_state,
+                    debug_chunks,
                 )
                 if was_active and not active_stream and pending_prompt is None:
                     print(prompt_text, end="", flush=True)
@@ -207,12 +288,17 @@ async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=
 
         message = message_task.result()
         was_active = active_stream
-        active_stream = print_unsolicited_stream_message(message, active_stream)
+        active_stream = print_unsolicited_stream_message(
+            message,
+            active_stream,
+            stream_state,
+            debug_chunks,
+        )
         if was_active and not active_stream:
             print(prompt_text, end="", flush=True)
 
 
-async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8):
+async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8, debug_chunks=False):
     """Receive streaming chunks with real-time printing.
 
     Returns (full_text, chunk_count, elapsed).
@@ -222,6 +308,7 @@ async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8
     started = time.time()
     last_chunk_time = None
     completed = False
+    stream_state = {}
 
     try:
         while True:
@@ -234,7 +321,7 @@ async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8
             if "chunk_delta" in message:
                 chunk_count += 1
                 last_chunk_time = time.time()
-                delta, is_end = print_stream_chunk(message)
+                delta, is_end = print_stream_chunk(message, stream_state, debug_chunks)
                 full_text += delta
 
                 if is_end:
@@ -285,6 +372,7 @@ async def chat_loop(
     updated_by: str,
     stream: bool = True,
     timeout: int = 120,
+    debug_chunks: bool = False,
 ):
     """Run the interactive chat loop over a persistent WebSocket connection."""
 
@@ -322,6 +410,7 @@ async def chat_loop(
                     prompt = await read_prompt_while_receiving(
                         f"{C.BOLD}{C.CYAN}[turn {turn + 1}]{C.RESET} {C.GREEN}You>{C.RESET} ",
                         incoming_queue,
+                        debug_chunks=debug_chunks,
                     )
                 except (EOFError, KeyboardInterrupt):
                     print(f"\n{C.DIM}Goodbye!{C.RESET}")
@@ -378,6 +467,7 @@ async def chat_loop(
                 full_text, chunk_count, elapsed = await receive_streaming_response(
                     incoming_queue,
                     timeout=timeout,
+                    debug_chunks=debug_chunks,
                 )
 
                 print(f" {C.DIM}[{chunk_count} chunks, {elapsed:.1f}s]{C.RESET}")
@@ -459,6 +549,11 @@ def main():
         default=120,
         help="Timeout per response in seconds (default: 120)",
     )
+    parser.add_argument(
+        "--debug-chunks",
+        action="store_true",
+        help="Print each stream chunk's metadata before its content",
+    )
 
     args = parser.parse_args()
 
@@ -509,6 +604,7 @@ def main():
                 updated_by=updated_by,
                 stream=not args.no_stream,
                 timeout=args.timeout,
+                debug_chunks=args.debug_chunks,
             )
         )
     except KeyboardInterrupt:

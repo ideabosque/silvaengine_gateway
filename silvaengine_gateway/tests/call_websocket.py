@@ -95,6 +95,62 @@ async def get_auth_token(base_url: str, username: str, password: str) -> str:
         sys.exit(1)
 
 
+def _find_reasoning_marker(message):
+    """Return a reasoning marker such as rs#1 when present in frame metadata."""
+    for key in ("suffix", "message_group_id", "data_format", "type"):
+        value = str(message.get(key) or "")
+        lowered = value.lower()
+        marker_index = lowered.find("rs#")
+        if marker_index >= 0:
+            marker = value[marker_index:].split("-", 1)[0].split("/", 1)[0]
+            return marker.strip()
+        if "reason" in lowered:
+            return value.strip() or "reasoning"
+
+    for key, value in message.items():
+        if key == "chunk_delta":
+            continue
+        text = str(value)
+        lowered = text.lower()
+        marker_index = lowered.find("rs#")
+        if marker_index >= 0:
+            marker = text[marker_index:].split("-", 1)[0].split("/", 1)[0]
+            return marker.strip()
+        if "reason" in lowered:
+            return text.strip() or "reasoning"
+
+    return ""
+
+
+def is_reasoning_chunk(message):
+    """Return True when a stream frame appears to carry reasoning tokens."""
+    return bool(_find_reasoning_marker(message))
+
+
+def reasoning_label(message):
+    """Build a compact label for reasoning stream chunks."""
+    marker = _find_reasoning_marker(message)
+    return f"REASONING {marker}" if marker else "REASONING"
+
+
+def print_stream_boundary(message, stream_state):
+    """Print a visible lane switch when reasoning starts or answer resumes."""
+    is_reasoning = is_reasoning_chunk(message)
+    marker = _find_reasoning_marker(message) if is_reasoning else ""
+    previous = stream_state.get("marker")
+    current = (is_reasoning, marker)
+
+    if current == previous:
+        return
+
+    if is_reasoning:
+        print(f"\n>>> {reasoning_label(message)}> ", end="", flush=True)
+    elif previous and previous[0]:
+        print("\n>>> ANSWER> ", end="", flush=True)
+
+    stream_state["marker"] = current
+
+
 async def connect_and_stream(
     ws_uri: str,
     token: str,
@@ -105,6 +161,7 @@ async def connect_and_stream(
     input_files: list = None,
     stream: bool = True,
     timeout: int = 120,
+    verbose: bool = False,
 ):
     """
     Connect to the WebSocket endpoint, send an ask_model request,
@@ -153,6 +210,7 @@ async def connect_and_stream(
         chunk_count = 0
         last_chunk_time = None
         idle_timeout = 8  # seconds without a chunk → stream complete
+        stream_state = {}
 
         try:
             while True:
@@ -170,16 +228,30 @@ async def connect_and_stream(
                     index = message.get("index", -1)
                     group_id = message.get("message_group_id", "")
 
+                    if verbose:
+                        metadata = {
+                            key: value
+                            for key, value in message.items()
+                            if key != "chunk_delta"
+                        }
+                        print(f"\n[chunk metadata] {json.dumps(metadata, default=str)}", flush=True)
+
                     if data_format == "text":
                         full_text += delta
                         # Print chunk inline for real-time feedback
+                        print_stream_boundary(message, stream_state)
                         print(delta, end="", flush=True)
                     elif data_format == "xml":
                         full_text += delta
-                        print(f"\n[XML chunk {index}]: {delta[:100]}...", flush=True)
+                        print_stream_boundary(message, stream_state)
+                        print(f"[XML chunk {index}]: {delta[:100]}...", flush=True)
                     else:
                         full_text += delta
-                        print(f"\n[{data_format} chunk {index}]: {delta[:100]}...", flush=True)
+                        print_stream_boundary(message, stream_state)
+                        print(
+                            f"[{data_format} chunk {index}]: {delta[:100]}...",
+                            flush=True,
+                        )
 
                     chunks.append(message)
 
@@ -379,6 +451,7 @@ def main():
             updated_by=updated_by,
             stream=not args.no_stream,
             timeout=args.timeout,
+            verbose=args.verbose,
         )
     )
 
