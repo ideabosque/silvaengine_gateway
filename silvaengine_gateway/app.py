@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SilvaEngine Gateway — FastAPI app factory.
+SilvaEngine Gateway - FastAPI app factory.
 
 Creates the FastAPI app, loads route manifest, initializes auth + rate limit
 middleware, mounts health/auth routes, and dynamically registers module
@@ -30,8 +30,15 @@ from .router_builder import (
     validate_manifest,
     resolve_dispatch,
 )
+from .websocket_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
+_DEFAULT_INVOKER_CLASS_NAMES = {
+    "ai_agent_core_engine": "AIAgentCoreEngine",
+    "ai_rfq_engine": "AIRFQEngine",
+    "knowledge_graph_engine": "KnowledgeGraphEngine",
+    "mcp_daemon_engine": "MCPDaemonEngine",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +46,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # When running from a project monorepo (cwd = .../silvaengine/), Python's
 # PathFinder discovers silvaengine_* directories (project roots without
-# __init__.py) and creates namespace packages — overriding the correct
+# __init__.py) and creates namespace packages - overriding the correct
 # SourceFileLoader specs from pip's editable finders.  Moving all
 # _EditableFinder instances above PathFinder ensures they resolve first.
 # ---------------------------------------------------------------------------
@@ -50,7 +57,7 @@ def _promote_editable_finders() -> None:
 
     When running from a monorepo (cwd = .../silvaengine/), PathFinder
     discovers silvaengine_* project-root directories and creates namespace
-    packages — shadowing the correct SourceFileLoader specs from pip's
+    packages - shadowing the correct SourceFileLoader specs from pip's
     editable finders.  This fix ensures editable installs resolve first.
     """
     import sys as _sys
@@ -134,12 +141,12 @@ def load_route_manifest(config: GatewayConfig) -> List[ModuleSpec]:
             raise
 
     # Priority 2: Built-in default (KGE only)
-    logger.info("No route manifest found — using built-in default (KGE only)")
+    logger.info("No route manifest found - using built-in default (KGE only)")
     return _default_manifest()
 
 
 def _default_manifest() -> List[ModuleSpec]:
-    """Built-in default route manifest — KGE only."""
+    """Built-in default route manifest - KGE only."""
     return [
         ModuleSpec(
             name="knowledge_graph_engine",
@@ -240,6 +247,23 @@ def _make_rate_limit_store(setting: Dict[str, Any], gw_logger: logging.Logger):
     return InMemoryRateLimitStore(), kind
 
 
+def _module_invoker_class_name(module: ModuleSpec) -> str:
+    """Return the class name used by downstream Invoker mappings."""
+    configured = os.getenv(f"FUNCTS_{module.name.upper()}_CLASS")
+    if configured:
+        return configured
+
+    default_name = _DEFAULT_INVOKER_CLASS_NAMES.get(module.package)
+    if default_name:
+        return default_name
+
+    if module.config_class:
+        config_name = module.config_class.rsplit(":", 1)[-1].rsplit(".", 1)[-1]
+        if config_name and config_name != "Config":
+            return config_name.replace("Config", "")
+
+    return "".join(part.capitalize() for part in module.package.split("_"))
+
 def _warn_multiprocess_compat(
     setting: Dict[str, Any],
     manifest: List[ModuleSpec],
@@ -257,22 +281,30 @@ def _warn_multiprocess_compat(
 
     if task_kind != "dynamodb":
         gw_logger.warning(
-            "workers=%d but task_backend is in-memory — background task status is "
+            "workers=%d but task_backend is in-memory - background task status is "
             "per-process; a poll may hit a different worker than the one that ran "
             "the job. Set GATEWAY_TASK_BACKEND=dynamodb.",
             workers,
         )
     if rl_kind != "dynamodb":
         gw_logger.warning(
-            "workers=%d but rate_limit_backend is in-memory — the effective limit "
+            "workers=%d but rate_limit_backend is in-memory - the effective limit "
             "is max_requests*workers. Set GATEWAY_RATE_LIMIT_BACKEND=dynamodb.",
             workers,
         )
     if any(r.handler_type == "sse" for m in manifest for r in m.routes):
         gw_logger.warning(
-            "workers=%d with SSE routes — the SSE registry is per-process. Use "
+            "workers=%d with SSE routes - the SSE registry is per-process. Use "
             "sticky sessions so each client's GET stream and POST land on the same "
             "worker; cross-user broadcast across workers needs a pub/sub backplane.",
+            workers,
+        )
+    if any(r.handler_type == "websocket" for m in manifest for r in m.routes):
+        gw_logger.warning(
+            "workers=%d with WebSocket routes - the ConnectionManager registry is "
+            "per-process. A client may connect to worker A, but a sync dispatch "
+            "thread on worker B cannot deliver to A's socket. Use a single worker "
+            "for WebSocket MVP, or implement a Redis-backed broker for multi-worker.",
             workers,
         )
 
@@ -307,11 +339,38 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
 
     init_module_configs(manifest, setting)
 
+    # Create the WebSocket ConnectionManager (single-process MVP)
+    connection_manager = ConnectionManager()
+
+    # Inject the ConnectionManager into module Config classes that support it
+    # (e.g. ai_agent_core_engine.handlers.config:Config.set_connection_manager)
+    for mod in manifest:
+        if not mod.config_class:
+            continue
+        try:
+            config_cls = resolve_dispatch(mod.config_class)
+            if hasattr(config_cls, "set_connection_manager"):
+                config_cls.set_connection_manager(connection_manager)
+                gw_logger.info(
+                    f"Injected ConnectionManager into {mod.name} Config"
+                )
+        except (ImportError, AttributeError, TypeError):
+            pass  # Module does not support connection manager - skip
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         gw_logger.info("Starting SilvaEngine Gateway...")
+
+        # Bind the running event loop to the ConnectionManager
+        import asyncio as _asyncio
+
+        connection_manager.set_event_loop(_asyncio.get_running_loop())
+
         yield
         gw_logger.info("Shutting down SilvaEngine Gateway...")
+
+        # Close active WebSocket connections
+        await connection_manager.shutdown()
 
         # Cleanup Cognito HTTP client if needed
         if GatewayConfig.auth_provider == "cognito":
@@ -347,7 +406,7 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     from fastapi.middleware.cors import CORSMiddleware
 
     # A wildcard origin and credentialed requests are mutually exclusive per the
-    # CORS spec — browsers reject "Access-Control-Allow-Origin: *" alongside
+    # CORS spec - browsers reject "Access-Control-Allow-Origin: *" alongside
     # credentials, and Starlette will not echo the wildcard in that case. Read an
     # explicit allowlist from GATEWAY_CORS_ORIGINS (comma-separated) to enable
     # credentials; otherwise fall back to a wildcard with credentials disabled.
@@ -415,12 +474,12 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
 
                 app.add_exception_handler(exc_cls, _domain_exc_handler)
                 gw_logger.info(
-                    f"Registered exception handler: {exc_cls.__name__} → {status_code}"
+                    f"Registered exception handler: {exc_cls.__name__} -> {status_code}"
                 )
             except (ImportError, AttributeError, TypeError) as e:
                 gw_logger.warning(
                     f"Module '{mod.name}': exception_class "
-                    f"'{exc_spec.get('exception_class')}' could not be resolved — "
+                    f"'{exc_spec.get('exception_class')}' could not be resolved - "
                     f"skipping: {e}"
                 )
 
@@ -436,6 +495,8 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
         manifest,
         config=GatewayConfig,
         auth_dependency=get_current_user,
+        connection_manager=connection_manager,
+        auth_provider=GatewayConfig.auth_provider,
     )
     app.include_router(router)
 
@@ -500,40 +561,61 @@ def build_setting_from_env() -> Dict[str, Any]:
         "neo4j_database": os.getenv("neo4j_database", "neo4j"),
         # Cache
         "cache_enabled": int(os.getenv("cache_enabled", "0")),
-        # MCP Daemon Engine — forwarded to mcp_daemon_engine.handlers.config:Config
+        # MCP Daemon Engine - forwarded to mcp_daemon_engine.handlers.config:Config
         "transport": os.getenv("MCP_TRANSPORT", "sse"),
         "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
         "funct_zip_path": os.getenv("FUNCT_ZIP_PATH"),
         "funct_extract_path": os.getenv("FUNCT_EXTRACT_PATH"),
+        # Internal MCP server — forwarded to ai_agent_core_engine.handlers.config:Config
+        # Used by _get_agent() to fetch agent MCP server config at runtime.
+        "internal_mcp": {
+            "base_url": os.getenv("mcp_server_url"),
+            "bearer_token": os.getenv("bearer_token"),
+            "headers": {
+                "x-api-key": os.getenv("x-api-key"),
+                "Content-Type": "application/json",
+            },
+        }
+        if os.getenv("mcp_server_url")
+        else None,
         # Shared-store backends (multi-process support)
         "task_backend": os.getenv("GATEWAY_TASK_BACKEND", "memory"),
         "task_table": os.getenv("GATEWAY_TASK_TABLE"),
-        "task_ttl": os.getenv("GATEWAY_TASK_TTL"),
+        "task_ttl": os.getenv("GATEWAY_TTL"),
         "rate_limit_backend": os.getenv("GATEWAY_RATE_LIMIT_BACKEND", "memory"),
         "rate_limit_table": os.getenv("GATEWAY_RATE_LIMIT_TABLE"),
     }
 
     # Build functs_on_local from route manifest (data-driven, no hard-coded module names)
     # Each module with a config_class and graphql routes gets a local-function entry.
+    # Also, modules with websocket routes that need streaming (e.g. ai_agent_core_engine)
+    # get their auxiliary streaming functions (send_data_to_stream,
+    # async_insert_update_tool_call) added so the invoker resolves them locally.
     manifest_for_functs = load_route_manifest(GatewayConfig)
     functs_on_local: Dict[str, Any] = {}
     for mod in manifest_for_functs:
         if mod.config_class:
             for route in mod.routes:
                 if route.handler_type == "graphql" and route.dispatch:
-                    # e.g. "knowledge_graph_engine.main:dispatch_graphql" → "dispatch_graphql"
-                    func_name = (
-                        route.dispatch.rsplit(":", 1)[-1]
-                        if ":" in route.dispatch
-                        else route.dispatch.rsplit(".", 1)[-1]
-                    )
+                    # Invoker calls target class methods, not wrapper names.
+                    # e.g. "/{endpoint_id}/knowledge_graph_graphql" -> "knowledge_graph_graphql"
+                    func_name = route.path.rstrip("/").rsplit("/", 1)[-1]
                     functs_on_local[func_name] = {
                         "module_name": mod.package,
-                        "class_name": os.getenv(
-                            f"FUNCTS_{mod.name.upper()}_CLASS",
-                            mod.config_class.rsplit(":", 1)[-1].replace("Config", ""),
-                        ),
+                        "class_name": _module_invoker_class_name(mod),
                     }
+
+                # WebSocket routes that need streaming require their
+                # auxiliary functions resolved locally by the invoker.
+                if route.handler_type == "websocket":
+                    class_name = _module_invoker_class_name(mod)
+                    # Core streaming bridge functions that must be local
+                    for aux_fn in ("send_data_to_stream", "async_insert_update_tool_call"):
+                        functs_on_local.setdefault(aux_fn, {
+                            "module_name": mod.package,
+                            "class_name": class_name,
+                        })
+
     # Allow env var overrides / additions
     functs_on_local.update(json.loads(os.getenv("FUNCTS_ON_LOCAL_OVERRIDES", "{}")))
     setting["functs_on_local"] = functs_on_local

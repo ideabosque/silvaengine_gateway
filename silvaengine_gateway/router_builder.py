@@ -24,7 +24,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, model_validator
 
 from .tasks.backend import generate_task_id, get_task_backend
@@ -47,7 +47,7 @@ class RouteSpec(BaseModel):
 
     path: str
     handler_type: str = (
-        "graphql"  # "graphql" | "rest" | "background" | "task_status" | "sse"
+        "graphql"  # "graphql" | "rest" | "background" | "task_status" | "sse" | "websocket"
     )
     dispatch: Optional[str] = None  # "knowledge_graph_engine.main:dispatch_graphql"
     methods: List[str] = Field(default_factory=lambda: ["POST"])
@@ -56,7 +56,13 @@ class RouteSpec(BaseModel):
 
     @model_validator(mode="after")
     def _check_dispatch_required(self) -> "RouteSpec":
-        if self.handler_type in ("graphql", "rest", "background") and not self.dispatch:
+        # WebSocket routes may omit dispatch (the handler manages its own loop).
+        # task_status and sse routes also don't need dispatch.
+        if (
+            self.handler_type
+            in ("graphql", "rest", "background")
+            and not self.dispatch
+        ):
             raise ValueError(
                 f"Route '{self.path}' with handler_type='{self.handler_type}' "
                 f"requires a 'dispatch' field"
@@ -214,7 +220,8 @@ def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
             seen_paths.add(route_key)
 
             # Try to resolve the dispatch — log a warning if it fails
-            if route.dispatch:
+            # (websocket routes may omit dispatch)
+            if route.dispatch and route.handler_type != "websocket":
                 try:
                     resolve_dispatch(route.dispatch)
                 except (ImportError, AttributeError, TypeError) as e:
@@ -602,6 +609,153 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
 
 
 # ---------------------------------------------------------------------------
+# WebSocket route handler factory
+# ---------------------------------------------------------------------------
+
+
+def _make_websocket_handler(
+    dispatch_fn: Optional[Callable],
+    connection_manager: Any = None,
+    auth_provider: str = "local",
+) -> Callable:
+    """Create an async WebSocket handler that authenticates, registers the
+    connection, and dispatches incoming messages.
+
+    The handler:
+    1. Verifies the JWT token from ``?token=<jwt>`` (before ``accept()``)
+    2. Resolves the partition id from ``?part_id=<tenant>``
+    3. Accepts the WebSocket and registers it with the ConnectionManager
+    4. Sends a ``connection_ack`` message with the assigned ``connection_id``
+    5. Loops: receives a JSON message → dispatches in the thread pool → sends response
+    6. Unregisters on disconnect
+
+    Args:
+        dispatch_fn: The dispatch callable (e.g. ``dispatch_ask_model``).
+            May be ``None`` — the handler will send an error message for each
+            incoming request.
+        connection_manager: The ``ConnectionManager`` instance.
+        auth_provider: ``"local"`` or ``"cognito"`` — selects the JWT verifier.
+    """
+    import uuid
+
+    async def ws_handler(websocket: WebSocket, endpoint_id: str) -> None:
+        from .auth.websocket import authenticate_websocket
+
+        # Authenticate before accepting — closes with 4001/4002 on failure
+        claims, part_id = await authenticate_websocket(websocket, auth_provider)
+        if claims is None:
+            return  # already closed by authenticate_websocket
+
+        await websocket.accept()
+
+        connection_id = str(uuid.uuid4())
+        if connection_manager is not None:
+            connection_manager.register(connection_id, websocket)
+
+        try:
+            # Send connection_ack so the client knows its connection_id
+            await websocket.send_json({
+                "type": "connection_ack",
+                "connection_id": connection_id,
+            })
+
+            partition_key = f"{endpoint_id}#{part_id}"
+            user = claims if claims else {}
+
+            while True:
+                message = await websocket.receive_json()
+
+                if dispatch_fn is None:
+                    await websocket.send_json({
+                        "type": "error",
+                        "detail": "No dispatch configured for this route",
+                    })
+                    continue
+
+                # Build params dict mirroring HTTP context injection.
+                # The client sends an action-style message:
+                #   {"action": "ask_model", "arguments": {...}}
+                # We unwrap this into the flat kwargs the dispatch function expects:
+                #   async_task_uuid, arguments, + context (endpoint_id, part_id, etc.)
+                if not isinstance(message, dict):
+                    message = {}
+                params = {}
+
+                # Unwrap action/arguments envelope (ai_agent_core_engine pattern)
+                if "arguments" in message and isinstance(message["arguments"], dict):
+                    params["arguments"] = message["arguments"]
+                else:
+                    # Flat message — use as-is
+                    params.update(message)
+
+                # Generate async_task_uuid (required by async_execute_ask_model)
+                import uuid as _uuid
+
+                params["async_task_uuid"] = str(_uuid.uuid4())
+
+                # Inject gateway context
+                if not params.get("context"):
+                    params["context"] = {}
+                params["context"]["partition_key"] = partition_key
+                params["context"]["part_id"] = part_id
+                params["context"]["endpoint_id"] = endpoint_id
+                params["context"]["connection_id"] = connection_id
+                params["context"]["user"] = user
+                params["partition_key"] = partition_key
+                params["endpoint_id"] = endpoint_id
+                params["part_id"] = part_id
+                params["connection_id"] = connection_id
+
+                # Execute dispatch in thread pool (sync dispatch functions)
+                loop = asyncio.get_running_loop()
+                try:
+                    result = await loop.run_in_executor(
+                        _executor,
+                        lambda: dispatch_fn(**params),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "WebSocket dispatch error [%s]: %s",
+                        dispatch_fn.__name__ if dispatch_fn else "None",
+                        traceback.format_exc(),
+                    )
+                    await websocket.send_json({
+                        "type": "error",
+                        "detail": str(exc),
+                    })
+                    continue
+
+                # Yield control to the event loop so any pending
+                # ConnectionManager sends (scheduled via
+                # asyncio.run_coroutine_threadsafe during streaming,
+                # including the is_message_end=True marker) are
+                # delivered before we send the dispatch result.
+                # 50ms is enough for the event loop to drain the send queue.
+                await asyncio.sleep(0.05)
+
+                # Send the dispatch result back (if any)
+                # Streaming chunks were already delivered via ConnectionManager
+                if result is not None:
+                    try:
+                        if isinstance(result, dict):
+                            await websocket.send_json(result)
+                        elif isinstance(result, str):
+                            await websocket.send_text(result)
+                    except Exception:
+                        pass
+
+        except WebSocketDisconnect:
+            logger.info("WebSocket disconnected: %s", connection_id)
+        except Exception as exc:
+            logger.warning("WebSocket error for %s: %s", connection_id, exc)
+        finally:
+            if connection_manager is not None:
+                connection_manager.unregister(connection_id)
+
+    return ws_handler
+
+
+# ---------------------------------------------------------------------------
 # Router builder
 # ---------------------------------------------------------------------------
 
@@ -670,25 +824,30 @@ def build_router_from_manifest(
     modules: List[ModuleSpec],
     config: Any = None,
     auth_dependency: Optional[Callable] = None,
+    connection_manager: Any = None,
+    auth_provider: str = "local",
 ) -> APIRouter:
     """
     Build a FastAPI APIRouter from the route manifest.
 
     For each route in each module:
-    1. Resolve the dispatch callable via importlib
+    1. Resolve the dispatch callable via importlib (if dispatch is set)
     2. Wrap it with the appropriate handler factory based on handler_type
-    3. Register it as an API route with auth dependency
+    3. Register it as an API route or WebSocket route
 
     handler_type determines the factory:
     - "graphql" / "rest": _make_sync_handler (runs dispatch in thread pool)
     - "background": _make_background_handler (submits task, returns task_id)
     - "task_status": _make_task_status_handler (polls task state)
     - "sse": _make_sse_handler (GET streaming via SSEManager)
+    - "websocket": _make_websocket_handler (WebSocket with auth + ConnectionManager)
 
     Args:
         modules: List of ModuleSpec from the route manifest
         config: GatewayConfig instance
-        auth_dependency: Optional FastAPI dependency for auth enforcement
+        auth_dependency: Optional FastAPI dependency for auth enforcement (HTTP only)
+        connection_manager: ConnectionManager instance for WebSocket routes
+        auth_provider: "local" or "cognito" — selects the WebSocket JWT verifier
 
     Returns:
         APIRouter with all routes registered
@@ -707,6 +866,37 @@ def build_router_from_manifest(
             elif handler_type == "sse":
                 # SSE routes — streaming via SSEManager, no dispatch needed
                 handler = _make_sse_handler(sse_manager_ref=module.sse_manager)
+            elif handler_type == "websocket":
+                # WebSocket routes — resolve dispatch if provided
+                ws_dispatch_fn = None
+                if route.dispatch:
+                    try:
+                        ws_dispatch_fn = resolve_dispatch(route.dispatch)
+                    except (ImportError, AttributeError, TypeError) as e:
+                        logger.error(
+                            f"Skipping WebSocket route {route.path} in {module.name}: "
+                            f"dispatch '{route.dispatch}' failed to resolve: {e}"
+                        )
+                        continue
+
+                handler = _make_websocket_handler(
+                    dispatch_fn=ws_dispatch_fn,
+                    connection_manager=connection_manager,
+                    auth_provider=auth_provider,
+                )
+
+                # WebSocket routes do not use HTTP auth dependencies
+                router.add_api_websocket_route(
+                    route.path,
+                    handler,
+                    name=route.name
+                    or f"{module.name}_ws_{route.path.strip('/').replace('/', '_')}",
+                )
+                logger.info(
+                    f"  Registered WebSocket route: {route.path} "
+                    f"auth={route.auth} dispatch={route.dispatch or 'none'}"
+                )
+                continue
             else:
                 try:
                     dispatch_fn = resolve_dispatch(route.dispatch)

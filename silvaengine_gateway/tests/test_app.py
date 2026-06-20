@@ -46,3 +46,37 @@ def test_me_requires_auth():
     client = TestClient(app)
     response = client.get("/me")
     assert response.status_code == 401
+
+
+def test_build_setting_from_env_uses_default_invoker_class_names(monkeypatch):
+    """WebSocket helper functions map to concrete invoker classes by default."""
+    monkeypatch.delenv("FUNCTS_AI_AGENT_CORE_ENGINE_CLASS", raising=False)
+    monkeypatch.delenv("FUNCTS_KNOWLEDGE_GRAPH_ENGINE_CLASS", raising=False)
+    monkeypatch.delenv("FUNCTS_ON_LOCAL_OVERRIDES", raising=False)
+
+    from silvaengine_gateway.app import build_setting_from_env
+
+    setting = build_setting_from_env()
+    functs_on_local = setting["functs_on_local"]
+
+    assert functs_on_local["send_data_to_stream"] == {
+        "module_name": "ai_agent_core_engine",
+        "class_name": "AIAgentCoreEngine",
+    }
+    assert functs_on_local["async_insert_update_tool_call"] == {
+        "module_name": "ai_agent_core_engine",
+        "class_name": "AIAgentCoreEngine",
+    }
+    assert functs_on_local["knowledge_graph_graphql"] == {
+        "module_name": "knowledge_graph_engine",
+        "class_name": "KnowledgeGraphEngine",
+    }
+    assert functs_on_local["ai_rfq_graphql"] == {
+        "module_name": "ai_rfq_engine",
+        "class_name": "AIRFQEngine",
+    }
+    assert functs_on_local["ai_agent_core_graphql"] == {
+        "module_name": "ai_agent_core_engine",
+        "class_name": "AIAgentCoreEngine",
+    }
+    assert "dispatch_graphql" not in functs_on_local
