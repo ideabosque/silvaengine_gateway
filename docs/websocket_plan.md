@@ -38,7 +38,7 @@ Still not verified:
 
 - Whether the deployed gateway environment imports the adjacent editable `ai_agent_core_engine` package version with these wrappers.
 - Whether a live client receives complete ai-agent stream chunks over `/{endpoint_id}/ai_agent_core_ws`.
-- Whether the full ai-agent request payload used by the WebSocket client matches `async_execute_ask_model` requirements, including `async_task_uuid` and `arguments`.
+- Whether custom clients need to preserve additional top-level request fields beyond the supported `action` and `arguments` envelope. The gateway currently generates `async_task_uuid` itself.
 
 ## 3. Target Architecture
 
@@ -238,7 +238,7 @@ Expected client flow:
 
    ```json
    {
-     "async_task_uuid": "...",
+     "action": "ask_model",
      "arguments": {
        "agent_uuid": "...",
        "thread_uuid": "...",
@@ -247,7 +247,7 @@ Expected client flow:
    }
    ```
 
-5. Gateway injects `connection_id`, `endpoint_id`, `part_id`, `partition_key`, and user context, then calls `dispatch_ask_model(**params)` in the dispatch executor. The WebSocket handler forwards the JSON object as dispatch params, so fields required by `async_execute_ask_model` must be top-level request fields.
+5. Gateway injects `connection_id`, `endpoint_id`, `part_id`, `partition_key`, generated `async_task_uuid`, and user context, then calls `dispatch_ask_model(**params)` in the dispatch executor. For ai-agent messages, the handler unwraps the supported `{ "action": "ask_model", "arguments": {...} }` envelope and forwards `arguments` as the core request payload.
 6. Core streaming calls `send_data_to_stream(...)` through the invoker chain.
 7. The invoker resolves `send_data_to_stream` locally through `functs_on_local`.
 8. The manager sends stream envelopes to the WebSocket until `is_message_end` is true.
@@ -319,7 +319,7 @@ Integration gate:
 - Start the gateway with `GATEWAY_WORKERS=1`.
 - Connect to `/gpt/ai_agent_core_ws?token=<jwt>&part_id=<tenant>`.
 - Receive `connection_ack`.
-- Send an ask-model request that includes top-level `async_task_uuid` and `arguments`.
+- Send an ask-model request with the supported `action` and `arguments` envelope. The gateway generates `async_task_uuid`.
 - Confirm multiple stream chunks arrive and the final chunk has `is_message_end=true`.
 - Confirm existing HTTP routes and auth tests still pass.
 - Confirm Lambda mode still streams through AWS API Gateway when no manager is injected.
