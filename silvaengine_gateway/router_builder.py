@@ -730,8 +730,8 @@ def _make_websocket_handler(
                 # asyncio.run_coroutine_threadsafe during streaming,
                 # including the is_message_end=True marker) are
                 # delivered before we send the dispatch result.
-                # A short sleep lets the event loop drain the send queue.
-                await asyncio.sleep(0.1)
+                # 50ms is enough for the event loop to drain the send queue.
+                await asyncio.sleep(0.05)
 
                 # Send the dispatch result back (if any)
                 # Streaming chunks were already delivered via ConnectionManager
