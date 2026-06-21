@@ -133,23 +133,51 @@ def reasoning_label(message):
     return f"REASONING {marker}" if marker else "REASONING"
 
 
+def elapsed_label(stream_state):
+    """Return elapsed time from the current request for boundary markers."""
+    started_at = stream_state.get("started_at")
+    if started_at is None:
+        return ""
+    return f"[+{time.time() - started_at:6.2f}s] "
+
+
 def print_stream_boundary(message, stream_state):
-    """Print a visible lane switch when reasoning starts or answer resumes."""
+    """Print explicit section boundaries for reasoning and response text."""
     is_reasoning = is_reasoning_chunk(message)
     marker = _find_reasoning_marker(message) if is_reasoning else ""
-    previous = stream_state.get("marker")
-    current = (is_reasoning, marker)
+    previous_mode = stream_state.get("mode")
+    previous_marker = stream_state.get("marker", "")
+    current_mode = "reasoning" if is_reasoning else "response"
 
-    if current == previous:
+    if previous_mode == current_mode and previous_marker == marker:
         return
 
-    if is_reasoning:
-        print(f"\n>>> {reasoning_label(message)}> ", end="", flush=True)
-    elif previous and previous[0]:
-        print("\n>>> ANSWER> ", end="", flush=True)
+    if previous_mode == "reasoning":
+        label = f" {previous_marker}" if previous_marker else ""
+        print(f"\n{elapsed_label(stream_state)}<<< REASONING END{label}", flush=True)
+    elif previous_mode == "response":
+        print(f"\n{elapsed_label(stream_state)}<<< RESPONSE END", flush=True)
 
-    stream_state["marker"] = current
+    if current_mode == "reasoning":
+        label = f" {marker}" if marker else ""
+        print(f"\n{elapsed_label(stream_state)}>>> REASONING START{label} ", end="", flush=True)
+    else:
+        print(f"\n{elapsed_label(stream_state)}>>> RESPONSE START ", end="", flush=True)
 
+    stream_state["mode"] = current_mode
+    stream_state["marker"] = marker
+
+
+def close_stream_boundary(stream_state):
+    """Close the currently active stream section, if any."""
+    mode = stream_state.get("mode")
+    marker = stream_state.get("marker", "")
+    if mode == "reasoning":
+        label = f" {marker}" if marker else ""
+        print(f"\n{elapsed_label(stream_state)}<<< REASONING END{label}", flush=True)
+    elif mode == "response":
+        print(f"\n{elapsed_label(stream_state)}<<< RESPONSE END", flush=True)
+    stream_state.clear()
 
 async def connect_and_stream(
     ws_uri: str,
@@ -201,16 +229,17 @@ async def connect_and_stream(
         print(f"  prompt: {prompt}")
         print()
 
+        started = time.time()
         await ws.send(json.dumps(request))
+        print("[+  0.00s request started]", flush=True)
 
         # 3. Receive streaming chunks
         chunks = []
         full_text = ""
-        started = time.time()
         chunk_count = 0
         last_chunk_time = None
         idle_timeout = 8  # seconds without a chunk → stream complete
-        stream_state = {}
+        stream_state = {"started_at": started}
 
         try:
             while True:
@@ -256,12 +285,14 @@ async def connect_and_stream(
                     chunks.append(message)
 
                     if is_end:
+                        close_stream_boundary(stream_state)
                         elapsed = time.time() - started
                         print(f"\n[is_message_end=True — stream complete]")
                         print(f"\n--- Stream complete ---")
                         print(f"  Chunks received: {chunk_count}")
                         print(f"  Total text length: {len(full_text)} chars")
                         print(f"  Elapsed: {elapsed:.2f}s")
+                        print(f"[+{elapsed:6.2f}s response ended]")
                         print(f"  message_group_id: {group_id}")
                         # Drain the trailing dispatch result (short timeout)
                         try:
@@ -271,11 +302,13 @@ async def connect_and_stream(
                         break
 
                 elif message.get("type") == "error":
+                    close_stream_boundary(stream_state)
                     print(f"\nERROR from server: {message.get('detail')}")
                     break
 
                 elif chunk_count > 0 and ("result" in message or "status" in message):
                     # Dispatch result arrived without is_message_end
+                    close_stream_boundary(stream_state)
                     break
 
                 else:
@@ -289,7 +322,9 @@ async def connect_and_stream(
                 print(f"\n--- Stream complete (idle timeout) ---")
                 print(f"  Chunks received: {chunk_count}")
                 print(f"  Total text length: {len(full_text)} chars")
+                close_stream_boundary(stream_state)
                 print(f"  Elapsed: {elapsed:.2f}s")
+                print(f"[+{elapsed:6.2f}s response ended]")
                 # Drain the trailing dispatch result
                 try:
                     await asyncio.wait_for(ws.recv(), timeout=idle_timeout)
