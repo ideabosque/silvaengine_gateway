@@ -146,26 +146,72 @@ def reasoning_label(message):
     return f"REASONING {marker}" if marker else "REASONING"
 
 
+def elapsed_label(stream_state):
+    """Return elapsed time from the current request for boundary markers."""
+    started_at = stream_state.get("started_at")
+    if started_at is None:
+        return ""
+    return f"[+{time.time() - started_at:6.2f}s] "
+
+
 def print_stream_boundary(message, stream_state):
-    """Print a visible lane switch when reasoning starts or answer resumes."""
+    """Print explicit section boundaries for reasoning and response text."""
     is_reasoning = is_reasoning_chunk(message)
     marker = _find_reasoning_marker(message) if is_reasoning else ""
-    previous = stream_state.get("marker")
-    current = (is_reasoning, marker)
+    previous_mode = stream_state.get("mode")
+    previous_marker = stream_state.get("marker", "")
+    current_mode = "reasoning" if is_reasoning else "response"
 
-    if current == previous:
+    if previous_mode == current_mode and previous_marker == marker:
         return
 
-    if is_reasoning:
+    if previous_mode == "reasoning":
+        label = f" {previous_marker}" if previous_marker else ""
         print(
-            f"\n{C.YELLOW}>>> {reasoning_label(message)}>{C.RESET} ",
-            end="",
+            f"\n{C.YELLOW}{elapsed_label(stream_state)}<<< REASONING END{label}{C.RESET}",
             flush=True,
         )
-    elif previous and previous[0]:
-        print(f"\n{C.MAGENTA}Agent>{C.RESET} ", end="", flush=True)
+    elif previous_mode == "response":
+        print(
+            f"\n{C.MAGENTA}{elapsed_label(stream_state)}<<< RESPONSE END{C.RESET}",
+            flush=True,
+        )
 
-    stream_state["marker"] = current
+    if current_mode == "reasoning":
+        label = f" {marker}" if marker else ""
+        print(
+            f"\n{C.YELLOW}{elapsed_label(stream_state)}>>> REASONING START{label}{C.RESET}",
+            flush=True,
+        )
+    else:
+        print(
+            f"\n{C.MAGENTA}{elapsed_label(stream_state)}>>> RESPONSE START{C.RESET}",
+            flush=True,
+        )
+
+    stream_state["mode"] = current_mode
+    stream_state["marker"] = marker
+
+
+def close_stream_boundary(stream_state):
+    """Close the currently active stream section, if any."""
+    mode = stream_state.get("mode")
+    marker = stream_state.get("marker", "")
+    if mode == "reasoning":
+        label = f" {marker}" if marker else ""
+        print(
+            f"\n{C.YELLOW}{elapsed_label(stream_state)}<<< REASONING END{label}{C.RESET}",
+            flush=True,
+        )
+    elif mode == "response":
+        print(
+            f"\n{C.MAGENTA}{elapsed_label(stream_state)}<<< RESPONSE END{C.RESET}",
+            flush=True,
+        )
+    started_at = stream_state.get("started_at")
+    stream_state.clear()
+    if started_at is not None:
+        stream_state["started_at"] = started_at
 
 
 def print_stream_chunk(message, stream_state=None, debug_chunks=False):
@@ -185,7 +231,6 @@ def print_stream_chunk(message, stream_state=None, debug_chunks=False):
         print(f"\n{C.DIM}[chunk metadata] {json.dumps(metadata, default=str)}{C.RESET}", flush=True)
 
     print_stream_boundary(message, stream_state)
-
     if data_format == "text":
         print(delta, end="", flush=True)
     elif data_format == "xml":
@@ -209,8 +254,6 @@ def print_stream_chunk(message, stream_state=None, debug_chunks=False):
 def print_unsolicited_stream_message(message, active, stream_state, debug_chunks=False):
     """Print frames that arrive while the user prompt is open."""
     if "chunk_delta" in message:
-        if not active and not is_reasoning_chunk(message):
-            print(f"\n{C.MAGENTA}Agent>{C.RESET} ", end="", flush=True)
         active = True
         _, is_end = print_stream_chunk(message, stream_state, debug_chunks)
         return False if is_end else active
@@ -298,7 +341,13 @@ async def read_prompt_while_receiving(prompt_text, incoming_queue, idle_timeout=
             print(prompt_text, end="", flush=True)
 
 
-async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8, debug_chunks=False):
+async def receive_streaming_response(
+    incoming_queue,
+    timeout=120,
+    idle_timeout=8,
+    debug_chunks=False,
+    started_at=None,
+):
     """Receive streaming chunks with real-time printing.
 
     Idle gaps are common while tools run. Do not return to the user prompt
@@ -306,9 +355,9 @@ async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8
     """
     full_text = ""
     chunk_count = 0
-    started = time.time()
+    started = started_at or time.time()
     last_chunk_time = None
-    stream_state = {}
+    stream_state = {"started_at": started}
 
     while True:
         elapsed = time.time() - started
@@ -321,6 +370,7 @@ async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8
                     f"\n{C.YELLOW}[stream did not finish after {elapsed:.0f}s, "
                     f"{chunk_count} chunks]{C.RESET}"
                 )
+            close_stream_boundary(stream_state)
             break
 
         recv_timeout = (
@@ -358,17 +408,22 @@ async def receive_streaming_response(incoming_queue, timeout=120, idle_timeout=8
                     await asyncio.wait_for(incoming_queue.get(), timeout=5)
                 except (asyncio.TimeoutError, Exception):
                     pass
+                close_stream_boundary(stream_state)
                 break
 
         elif message.get("type") == "error":
+            close_stream_boundary(stream_state)
             print(f"\n{C.RED}ERROR: {message.get('detail')}{C.RESET}")
             break
 
         elif chunk_count > 0 and ("result" in message or "status" in message):
+            close_stream_boundary(stream_state)
             break
 
     elapsed = time.time() - started
+    print(f"\n{C.DIM}[+{elapsed:6.2f}s response ended]{C.RESET}", flush=True)
     return full_text, chunk_count, elapsed
+
 
 async def chat_loop(
     ws_uri: str,
@@ -465,14 +520,15 @@ async def chat_loop(
                     },
                 }
 
+                turn_started = time.time()
                 await ws.send(json.dumps(request))
 
-                print(f"{C.MAGENTA}Agent>{C.RESET} ", end="", flush=True)
-
+                print(f"{C.DIM}[+  0.00s request started]{C.RESET}")
                 full_text, chunk_count, elapsed = await receive_streaming_response(
                     incoming_queue,
                     timeout=timeout,
                     debug_chunks=debug_chunks,
+                    started_at=turn_started,
                 )
 
                 print(f" {C.DIM}[{chunk_count} chunks, {elapsed:.1f}s]{C.RESET}")
