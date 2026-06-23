@@ -86,7 +86,7 @@ class ModuleSpec(BaseModel):
 
     config_init_style: str = "dict"
     # "dict"   → Config.initialize(logger, setting)     (KGE pattern)
-    # "kwargs" → Config.initialize(logger, **setting)     (ai_rfq_engine pattern)
+    # "kwargs" → Config.initialize(logger, **setting)     (rfq_engine pattern)
 
     config_exclude_keys: List[str] = Field(
         default_factory=lambda: [
@@ -115,6 +115,11 @@ class ModuleSpec(BaseModel):
             "rate_limit_table",
         ]
     )
+
+    config_overrides: Dict[str, Any] = Field(default_factory=dict)
+    # Per-module setting overrides applied after exclude filtering.
+    # e.g. {"pg_table_prefix": "rfq_"} to give rfq_engine a different
+    # table prefix than the global PG_TABLE_PREFIX.
 
     # Lifecycle hooks — "package.module:function" resolved via importlib
     on_startup: Optional[str] = None
@@ -803,6 +808,17 @@ def init_module_configs(
         module_setting = {
             k: v for k, v in setting.items() if k not in module.config_exclude_keys
         }
+
+        # Apply per-module overrides (e.g. pg_table_prefix for rfq_engine).
+        # Override values may reference other setting keys via {setting:KEY}.
+        # e.g. config_overrides: {pg_table_prefix: "{setting:rfq_pg_table_prefix}"}
+        # → resolved to setting["rfq_pg_table_prefix"] at runtime.
+        if module.config_overrides:
+            for override_key, override_val in module.config_overrides.items():
+                if isinstance(override_val, str) and override_val.startswith("{setting:") and override_val.endswith("}"):
+                    ref_key = override_val[len("{setting:"):-1]
+                    override_val = setting.get(ref_key)
+                module_setting[override_key] = override_val
 
         if not module_setting:
             logger.debug(

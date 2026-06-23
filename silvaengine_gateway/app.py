@@ -35,7 +35,7 @@ from .websocket_manager import ConnectionManager
 logger = logging.getLogger(__name__)
 _DEFAULT_INVOKER_CLASS_NAMES = {
     "ai_agent_core_engine": "AIAgentCoreEngine",
-    "ai_rfq_engine": "AIRFQEngine",
+    "rfq_engine": "RFQEngine",
     "knowledge_graph_engine": "KnowledgeGraphEngine",
     "mcp_daemon_engine": "MCPDaemonEngine",
 }
@@ -688,6 +688,23 @@ def build_setting_from_env() -> Dict[str, Any]:
         "neo4j_database": os.getenv("neo4j_database", "neo4j"),
         # Cache
         "cache_enabled": int(os.getenv("cache_enabled", "0")),
+        # Dual-backend selection (forwarded to all module Configs)
+        # db_backend: "dynamodb" (default) or "postgresql"
+        # When "postgresql", db_host/db_port/db_user/db_password/db_schema are
+        # used instead of DynamoDB. Per-module table prefixes avoid collisions
+        # in shared databases (KGE uses kge_, RFQ uses rfq_, etc.).
+        # DATABASE_URL takes precedence over individual PG_* vars when set.
+        "db_backend": os.getenv("db_backend", "dynamodb"),
+        "db_host": os.getenv("PG_HOST") or os.getenv("db_host"),
+        "db_port": os.getenv("PG_PORT") or os.getenv("db_port"),
+        "db_user": os.getenv("PG_USER") or os.getenv("db_user"),
+        "db_password": os.getenv("PG_PASSWORD") or os.getenv("db_password"),
+        "db_schema": os.getenv("PG_DB") or os.getenv("db_schema"),
+        "database_url": os.getenv("DATABASE_URL"),
+        # Per-module PG table prefixes — referenced by config_overrides
+        # in routes.yaml via {setting:kge_pg_table_prefix} etc.
+        "kge_pg_table_prefix": os.getenv("KGE_PG_TABLE_PREFIX", ""),
+        "rfq_pg_table_prefix": os.getenv("RFQ_PG_TABLE_PREFIX", ""),
         # MCP Daemon Engine - forwarded to mcp_daemon_engine.handlers.config:Config
         "transport": os.getenv("MCP_TRANSPORT", "sse"),
         "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
