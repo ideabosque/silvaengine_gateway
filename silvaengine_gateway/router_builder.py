@@ -328,7 +328,7 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
         # Execute dispatch in thread pool (sync dispatch functions)
         label = _dispatch_label(params)
         logger.info(
-            "→ %s %s [%s%s]",
+            ">> %s %s [%s%s]",
             request.method,
             request.url.path,
             dispatch_fn.__name__,
@@ -350,7 +350,7 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
             raise
 
         logger.info(
-            "← %s %s [%s%s] %.0f ms",
+            "<< %s %s [%s%s] %.0f ms",
             request.method,
             request.url.path,
             dispatch_fn.__name__,
@@ -416,7 +416,7 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
 
         label = _dispatch_label(params)
         logger.info(
-            "⇢ %s %s [%s%s] background task=%s",
+            ">> %s %s [%s%s] background task=%s",
             request.method,
             request.url.path,
             dispatch_fn.__name__,
