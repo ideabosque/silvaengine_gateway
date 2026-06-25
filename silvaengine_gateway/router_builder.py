@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Shared thread pool for sync dispatch execution
 _executor = ThreadPoolExecutor(
-    max_workers=int(__import__("os").environ.get("GATEWAY_DISPATCH_WORKERS", "8")),
+    max_workers=int(__import__("os").environ.get("GATEWAY_DISPATCH_WORKERS", "32")),
     thread_name_prefix="gw-dispatch",
 )
 
