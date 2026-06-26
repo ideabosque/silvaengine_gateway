@@ -27,6 +27,8 @@ modules:
     transport: graphql
     config_class: "knowledge_graph_engine.handlers.config:Config"
     config_init_style: dict
+    config_overrides:
+      pg_table_prefix: "{setting:kge_pg_table_prefix}"
     routes:
       - path: "/{endpoint_id}/knowledge_graph_graphql"
         handler_type: graphql
@@ -45,16 +47,18 @@ modules:
         methods: ["GET"]
         auth: true
 
-  # ── AI RFQ Engine ────────────────────────────────────────────────────
-  - name: ai_rfq_engine
-    package: ai_rfq_engine
+  # ── RFQ Engine ───────────────────────────────────────────────────────
+  - name: rfq_engine
+    package: rfq_engine
     transport: graphql
-    config_class: "ai_rfq_engine.handlers.config:Config"
+    config_class: "rfq_engine.handlers.config:Config"
     config_init_style: dict
+    config_overrides:
+      pg_table_prefix: "{setting:rfq_pg_table_prefix}"
     routes:
-      - path: "/{endpoint_id}/ai_rfq_graphql"
+      - path: "/{endpoint_id}/rfq_graphql"
         handler_type: graphql
-        dispatch: "ai_rfq_engine.main:dispatch_graphql"
+        dispatch: "rfq_engine.main:dispatch_graphql"
         methods: ["POST"]
         auth: true
 
