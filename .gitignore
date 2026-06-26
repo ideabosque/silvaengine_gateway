@@ -227,3 +227,4 @@ CLAUDE.md
 .codex/
 .agents/
 .pytest-tmp/
+backups/
