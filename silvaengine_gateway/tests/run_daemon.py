@@ -37,7 +37,7 @@ _SIBLING_ROOTS = [
     str(_MONOREPO / name)
     for name in (
         "knowledge_graph_engine",
-        "ai_rfq_engine",
+        "rfq_engine",
         "mcp_daemon_engine",
         "ai_agent_core_engine",
         "ai_agent_handler",
@@ -177,7 +177,7 @@ def main() -> None:
     print(f"  Auth: {setting.get('auth_provider', 'local')}")
     print(f"  Endpoint: {setting.get('endpoint_id')} / Partition: {setting.get('part_id')}")
     print(f"  Neo4j: {setting.get('neo4j_uri', 'n/a')}")
-    ws_routes = [k for k in setting.get("functs_on_local", {}) if k not in ("knowledge_graph_graphql", "ai_rfq_graphql")]
+    ws_routes = [k for k in setting.get("functs_on_local", {}) if k not in ("knowledge_graph_graphql", "rfq_graphql")]
     if ws_routes:
         print(f"  WebSocket streaming: {', '.join(ws_routes)}")
     print(f"{'='*60}\n")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Call the AI RFQ Engine inquire_catalog endpoint through the SilvaEngine Gateway.
+Call the RFQ Engine inquire_catalog endpoint through the SilvaEngine Gateway.
 
 inquire_catalog routes a search query through KGE (knowledge_graph_engine) and
 returns matching catalog items.
@@ -53,8 +53,8 @@ from pathlib import Path
 
 # ── Ensure project roots are on sys.path ───────────────────────────
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
-_AI_RFQ_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent / "ai_rfq_engine")
-for _p in [_PROJECT_ROOT, _AI_RFQ_ROOT]:
+_RFQ_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent / "rfq_engine")
+for _p in [_PROJECT_ROOT, _RFQ_ROOT]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -111,7 +111,7 @@ _promote_editable_finders()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Call AI RFQ Engine inquire_catalog through the SilvaEngine Gateway"
+        description="Call RFQ Engine inquire_catalog through the SilvaEngine Gateway"
     )
 
     # ── Connection ────────────────────────────────────────────────
@@ -295,8 +295,8 @@ def main() -> None:
         token = get_token(base_url, username, password)
 
     # ── Build request ────────────────────────────────────────────────
-    # AI RFQ Engine GraphQL endpoint
-    graphql_path = f"/{endpoint_id}/ai_rfq_graphql"
+    # RFQ Engine GraphQL endpoint
+    graphql_path = f"/{endpoint_id}/rfq_graphql"
     url = f"{base_url}{graphql_path}"
 
     payload = build_graphql_payload(args)

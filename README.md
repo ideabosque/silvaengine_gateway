@@ -23,13 +23,13 @@ changes, zero gateway Python code.
 | Module | Package | Config Init | Routes |
 |---|---|---|---|
 | Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | GraphQL, Extract, Extract Status |
-| AI RFQ Engine | `ai_rfq_engine` | `dict` | GraphQL |
+| RFQ Engine | `rfq_engine` | `dict` | GraphQL |
 | MCP Daemon Engine | `mcp_daemon_engine` | `dict` | GraphQL, REST, SSE, Background, Cache Admin, Info |
 
 ## Requirements
 
 - Python 3.10 or later
-- The `knowledge_graph_engine`, `ai_rfq_engine`, and `mcp_daemon_engine` packages
+- The `knowledge_graph_engine`, `rfq_engine`, and `mcp_daemon_engine` packages
   (the gateway starts gracefully without any module installed — unresolvable
   imports are logged as warnings)
 - DynamoDB, Neo4j, and model-provider configuration when exercising KGE routes
@@ -77,7 +77,7 @@ Paths carry only `{ep}` (endpoint_id). The tenant partition id is sent in the
 | `POST` | `/{ep}/knowledge_graph_graphql` | Yes | KGE GraphQL |
 | `POST` | `/{ep}/extract` | Yes | KGE extraction |
 | `GET` | `/{ep}/extract/status/{task_id}` | Yes | Poll extraction status |
-| `POST` | `/{ep}/ai_rfq_graphql` | Yes | AI RFQ Engine GraphQL |
+| `POST` | `/{ep}/rfq_graphql` | Yes | RFQ Engine GraphQL |
 | `POST` | `/{ep}/mcp_daemon_graphql` | Yes | MCP Daemon GraphQL |
 | `POST` | `/{ep}/mcp` | Yes | MCP JSON-RPC |
 | `GET` | `/{ep}/sse` | Yes | MCP SSE stream |

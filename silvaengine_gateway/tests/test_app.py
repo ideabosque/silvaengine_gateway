@@ -72,9 +72,9 @@ def test_build_setting_from_env_uses_default_invoker_class_names(monkeypatch):
         "module_name": "knowledge_graph_engine",
         "class_name": "KnowledgeGraphEngine",
     }
-    assert functs_on_local["ai_rfq_graphql"] == {
-        "module_name": "ai_rfq_engine",
-        "class_name": "AIRFQEngine",
+    assert functs_on_local["rfq_graphql"] == {
+        "module_name": "rfq_engine",
+        "class_name": "RFQEngine",
     }
     assert functs_on_local["ai_agent_core_graphql"] == {
         "module_name": "ai_agent_core_engine",
