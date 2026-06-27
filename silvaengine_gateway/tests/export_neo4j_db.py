@@ -239,14 +239,14 @@ def export_nodes(session, lines, label_filter=None):
                 lines.append(
                     f"MERGE (n:{_bt(label)} {{_export_id: {_cypher_value(id_val)}}})"
                     f" SET n{props_cypher}"
-                    f" SET n._export_id = {_cypher_value(id_val)}"
+                    f" SET n._export_id = {_cypher_value(id_val)};"
                 )
             else:
                 # element_id is a string — store it for rel linking
                 lines.append(
                     f"MERGE (n:{_bt(label)} {{_element_id: {_cypher_value(id_val)}}})"
                     f" SET n{props_cypher}"
-                    f" SET n._element_id = {_cypher_value(id_val)}"
+                    f" SET n._element_id = {_cypher_value(id_val)};"
                 )
             total_nodes += 1
 
@@ -302,7 +302,7 @@ def export_relationships(session, lines, labels, rel_type_filter=None):
             lines.append(
                 f"{a_match} MATCH {b_match} "
                 f"MERGE (a)-[r:{rel_type_str}]->(b)"
-                f" SET r{props_cypher}"
+                f" SET r{props_cypher};"
             )
             total_rels += 1
 
