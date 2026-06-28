@@ -129,13 +129,19 @@ def _cypher_value(value):
 
 
 def _props_cypher(props):
-    """Render a property dict as Cypher '{ k: v, ... }' syntax."""
+    """Render a property dict as Cypher ' += { k: v, ... }' syntax.
+
+    Uses '+= ' (merge) so existing properties (e.g. _element_id from the
+    MERGE pattern) are preserved. Plain 'SET n {map}' is invalid Cypher;
+    the correct forms are 'SET n = {map}' (overwrite) or 'SET n += {map}'
+    (merge). We use merge to avoid clobbering the matching key.
+    """
     if not props:
         return ""
     pairs = ", ".join(
         f"{_bt(k)}: {_cypher_value(v)}" for k, v in sorted(props.items())
     )
-    return f" {{{pairs}}}"
+    return f" += {{{pairs}}}"
 
 
 # ---------------------------------------------------------------------------
@@ -234,18 +240,21 @@ def export_nodes(session, lines, label_filter=None):
             props = dict(node)
             # Store the internal id so relationships can reconnect on import
             props_cypher = _props_cypher(props)
+            # Build the SET clause for properties — skip when empty to avoid
+            # generating invalid "SET n" with no assignment.
+            set_props = f" SET n{props_cypher}" if props_cypher else ""
             # Use MERGE on element_id/id so re-import is idempotent
             if id_type == "id" and id_val.isdigit():
                 lines.append(
                     f"MERGE (n:{_bt(label)} {{_export_id: {_cypher_value(id_val)}}})"
-                    f" SET n{props_cypher}"
+                    f"{set_props}"
                     f" SET n._export_id = {_cypher_value(id_val)};"
                 )
             else:
                 # element_id is a string — store it for rel linking
                 lines.append(
                     f"MERGE (n:{_bt(label)} {{_element_id: {_cypher_value(id_val)}}})"
-                    f" SET n{props_cypher}"
+                    f"{set_props}"
                     f" SET n._element_id = {_cypher_value(id_val)};"
                 )
             total_nodes += 1
@@ -299,10 +308,11 @@ def export_relationships(session, lines, labels, rel_type_filter=None):
                 b_match = f"(b {{_element_id: {_cypher_value(b_val)}}})"
 
             rel_type_str = _bt(rtype)
+            set_clause = f" SET r{props_cypher};" if props_cypher else ";"
             lines.append(
                 f"{a_match} MATCH {b_match} "
                 f"MERGE (a)-[r:{rel_type_str}]->(b)"
-                f" SET r{props_cypher};"
+                f"{set_clause}"
             )
             total_rels += 1
 
