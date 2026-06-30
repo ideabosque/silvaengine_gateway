@@ -152,6 +152,21 @@ modules:
         methods: ["GET"]
         auth: true
 
+  # ── AI Coordination Engine ──────────────────────────────────────────
+  - name: ai_coordination_engine
+    package: ai_coordination_engine
+    transport: graphql
+    config_class: "ai_coordination_engine.handlers.config:Config"
+    config_init_style: kwargs
+    config_overrides:
+      pg_table_prefix: "{setting:ace_pg_table_prefix}"
+    routes:
+      - path: "/{endpoint_id}/ai_coordination_graphql"
+        handler_type: graphql
+        dispatch: "ai_coordination_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+
   # ── AI Agent Core Engine ────────────────────────────────────────────
   - name: ai_agent_core_engine
     package: ai_agent_core_engine
