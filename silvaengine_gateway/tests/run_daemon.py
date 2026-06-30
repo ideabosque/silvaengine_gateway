@@ -41,6 +41,7 @@ _SIBLING_ROOTS = [
         "mcp_daemon_engine",
         "ai_agent_core_engine",
         "ai_agent_handler",
+        "ai_coordination_engine",
     )
 ]
 for _p in [_PROJECT_ROOT, *_SIBLING_ROOTS]:
@@ -66,7 +67,8 @@ def _promote_editable_finders() -> None:
     # Editable finders are class objects (not instances), so we check
     # f.__name__ rather than type(f).__name__.
     editable = [
-        f for f in meta_path
+        f
+        for f in meta_path
         if hasattr(f, "__name__") and f.__name__ == "_EditableFinder"
     ]
     if not editable:
@@ -103,16 +105,22 @@ def parse_args() -> argparse.Namespace:
         description="Launch the SilvaEngine Gateway daemon for integration testing"
     )
     parser.add_argument(
-        "--port", type=int, default=None,
-        help="Port to listen on (default: from .env or 8765)"
+        "--port",
+        type=int,
+        default=None,
+        help="Port to listen on (default: from .env or 8765)",
     )
     parser.add_argument(
-        "--dotenv", type=str, default=None,
-        help="Path to .env file (default: <this_script_dir>/.env)"
+        "--dotenv",
+        type=str,
+        default=None,
+        help="Path to .env file (default: <this_script_dir>/.env)",
     )
     parser.add_argument(
-        "--host", type=str, default=None,
-        help="Host to bind (default: from .env or 0.0.0.0)"
+        "--host",
+        type=str,
+        default=None,
+        help="Host to bind (default: from .env or 0.0.0.0)",
     )
     return parser.parse_args()
 
@@ -175,9 +183,15 @@ def main() -> None:
     print(f"  SilvaEngine Gateway")
     print(f"  http://{host}:{port}")
     print(f"  Auth: {setting.get('auth_provider', 'local')}")
-    print(f"  Endpoint: {setting.get('endpoint_id')} / Partition: {setting.get('part_id')}")
+    print(
+        f"  Endpoint: {setting.get('endpoint_id')} / Partition: {setting.get('part_id')}"
+    )
     print(f"  Neo4j: {setting.get('neo4j_uri', 'n/a')}")
-    ws_routes = [k for k in setting.get("functs_on_local", {}) if k not in ("knowledge_graph_graphql", "rfq_graphql")]
+    ws_routes = [
+        k
+        for k in setting.get("functs_on_local", {})
+        if k not in ("knowledge_graph_graphql", "rfq_graphql")
+    ]
     if ws_routes:
         print(f"  WebSocket streaming: {', '.join(ws_routes)}")
     print(f"{'='*60}\n")

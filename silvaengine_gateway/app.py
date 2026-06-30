@@ -35,6 +35,7 @@ from .websocket_manager import ConnectionManager
 logger = logging.getLogger(__name__)
 _DEFAULT_INVOKER_CLASS_NAMES = {
     "ai_agent_core_engine": "AIAgentCoreEngine",
+    "ai_coordination_engine": "AICoordinationEngine",
     "rfq_engine": "RFQEngine",
     "knowledge_graph_engine": "KnowledgeGraphEngine",
     "mcp_daemon_engine": "MCPDaemonEngine",
@@ -705,6 +706,7 @@ def build_setting_from_env() -> Dict[str, Any]:
         # in routes.yaml via {setting:kge_pg_table_prefix} etc.
         "kge_pg_table_prefix": os.getenv("KGE_PG_TABLE_PREFIX", ""),
         "rfq_pg_table_prefix": os.getenv("RFQ_PG_TABLE_PREFIX", ""),
+        "ace_pg_table_prefix": os.getenv("ACE_PG_TABLE_PREFIX", ""),
         # MCP Daemon Engine - forwarded to mcp_daemon_engine.handlers.config:Config
         "transport": os.getenv("MCP_TRANSPORT", "sse"),
         "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
