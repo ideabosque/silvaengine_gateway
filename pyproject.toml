@@ -12,6 +12,7 @@ dependencies = [
     "knowledge_graph_engine",
     "rfq_engine",
     "mcp-daemon-engine",
+    "ai_coordination_engine",
     # FastAPI stack
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
