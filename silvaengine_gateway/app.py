@@ -265,6 +265,7 @@ def _module_invoker_class_name(module: ModuleSpec) -> str:
 
     return "".join(part.capitalize() for part in module.package.split("_"))
 
+
 def _internal_mcp_base_url() -> str:
     """Return the configured internal MCP gateway base URL."""
     return os.getenv("internal_mcp_base_url", "").rstrip("/")
@@ -336,9 +337,7 @@ def _fetch_internal_mcp_token(token_url: str, username: str, password: str) -> s
     import urllib.parse
     import urllib.request
 
-    data = urllib.parse.urlencode(
-        {"username": username, "password": password}
-    ).encode()
+    data = urllib.parse.urlencode({"username": username, "password": password}).encode()
     req = urllib.request.Request(
         token_url,
         data=data,
@@ -360,7 +359,10 @@ def _resolve_internal_mcp_bearer_token(base_url: str) -> str:
     if not username or not password:
         return ""
 
-    if os.getenv("GATEWAY_AUTH_PROVIDER", os.getenv("AUTH_PROVIDER", "local")) == "local":
+    if (
+        os.getenv("GATEWAY_AUTH_PROVIDER", os.getenv("AUTH_PROVIDER", "local"))
+        == "local"
+    ):
         return _generate_local_internal_mcp_token(username, password)
 
     token_url = _internal_mcp_token_url(base_url)
@@ -479,9 +481,7 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
             config_cls = resolve_dispatch(mod.config_class)
             if hasattr(config_cls, "set_connection_manager"):
                 config_cls.set_connection_manager(connection_manager)
-                gw_logger.info(
-                    f"Injected ConnectionManager into {mod.name} Config"
-                )
+                gw_logger.info(f"Injected ConnectionManager into {mod.name} Config")
         except (ImportError, AttributeError, TypeError):
             pass  # Module does not support connection manager - skip
 
@@ -704,9 +704,12 @@ def build_setting_from_env() -> Dict[str, Any]:
         "database_url": os.getenv("DATABASE_URL"),
         # Per-module PG table prefixes — referenced by config_overrides
         # in routes.yaml via {setting:kge_pg_table_prefix} etc.
-        "kge_pg_table_prefix": os.getenv("KGE_PG_TABLE_PREFIX", ""),
-        "rfq_pg_table_prefix": os.getenv("RFQ_PG_TABLE_PREFIX", ""),
-        "ace_pg_table_prefix": os.getenv("ACE_PG_TABLE_PREFIX", ""),
+        "kge_pg_table_prefix": os.getenv("KGE_PG_TABLE_PREFIX", "kge_"),
+        "rfq_pg_table_prefix": os.getenv("RFQ_PG_TABLE_PREFIX", "rfq_"),
+        "ace_pg_table_prefix": os.getenv("ACE_PG_TABLE_PREFIX", "ace_"),
+        # ai_agent_core_engine defaults its own prefix to "aace_"; keep that
+        # default here so table names are unchanged when the env var is unset.
+        "aace_pg_table_prefix": os.getenv("AACE_PG_TABLE_PREFIX", "aace_"),
         # MCP Daemon Engine - forwarded to mcp_daemon_engine.handlers.config:Config
         "transport": os.getenv("MCP_TRANSPORT", "sse"),
         "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
@@ -747,11 +750,17 @@ def build_setting_from_env() -> Dict[str, Any]:
                 if route.handler_type == "websocket":
                     class_name = _module_invoker_class_name(mod)
                     # Core streaming bridge functions that must be local
-                    for aux_fn in ("send_data_to_stream", "async_insert_update_tool_call"):
-                        functs_on_local.setdefault(aux_fn, {
-                            "module_name": mod.package,
-                            "class_name": class_name,
-                        })
+                    for aux_fn in (
+                        "send_data_to_stream",
+                        "async_insert_update_tool_call",
+                    ):
+                        functs_on_local.setdefault(
+                            aux_fn,
+                            {
+                                "module_name": mod.package,
+                                "class_name": class_name,
+                            },
+                        )
 
     # Allow env var overrides / additions
     functs_on_local.update(json.loads(os.getenv("FUNCTS_ON_LOCAL_OVERRIDES", "{}")))
