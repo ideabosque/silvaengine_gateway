@@ -530,29 +530,11 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS
-    from fastapi.middleware.cors import CORSMiddleware
-
-    # A wildcard origin and credentialed requests are mutually exclusive per the
-    # CORS spec - browsers reject "Access-Control-Allow-Origin: *" alongside
-    # credentials, and Starlette will not echo the wildcard in that case. Read an
-    # explicit allowlist from GATEWAY_CORS_ORIGINS (comma-separated) to enable
-    # credentials; otherwise fall back to a wildcard with credentials disabled.
-    cors_env = os.environ.get("GATEWAY_CORS_ORIGINS", "").strip()
-    if cors_env and cors_env != "*":
-        allow_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
-        allow_credentials = True
-    else:
-        allow_origins = ["*"]
-        allow_credentials = False
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=allow_origins,
-        allow_credentials=allow_credentials,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
-    )
+    # NOTE: CORS is added LAST (below), after rate-limit and auth, so it is the
+    # OUTERMOST middleware. Starlette runs the last-added middleware first, so
+    # this lets CORS answer preflight OPTIONS (which carry no Authorization
+    # header) and stamp Access-Control-* headers onto every response — including
+    # auth 401s — instead of the auth middleware rejecting the preflight first.
 
     # Task + rate-limit backends (shared stores when configured for multi-process)
     task_kind = _configure_task_backend(setting, gw_logger)
@@ -573,6 +555,30 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     from .auth.middleware import FlexJWTMiddleware
 
     app.add_middleware(FlexJWTMiddleware, public_paths=["/health", "/auth"])
+
+    # CORS — added LAST so it is the OUTERMOST middleware (see note above).
+    from fastapi.middleware.cors import CORSMiddleware
+
+    # A wildcard origin and credentialed requests are mutually exclusive per the
+    # CORS spec - browsers reject "Access-Control-Allow-Origin: *" alongside
+    # credentials, and Starlette will not echo the wildcard in that case. Read an
+    # explicit allowlist from GATEWAY_CORS_ORIGINS (comma-separated) to enable
+    # credentials; otherwise fall back to a wildcard with credentials disabled.
+    cors_env = os.environ.get("GATEWAY_CORS_ORIGINS", "").strip()
+    if cors_env and cors_env != "*":
+        allow_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+        allow_credentials = True
+    else:
+        allow_origins = ["*"]
+        allow_credentials = False
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # Auth routes
     from .routes.auth import router as auth_router
