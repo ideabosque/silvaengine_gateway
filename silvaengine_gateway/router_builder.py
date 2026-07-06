@@ -54,6 +54,12 @@ class RouteSpec(BaseModel):
     auth: bool = True
     name: Optional[str] = None
 
+    # WebSocket only: dispatch used to answer a "ping" message by invoking the
+    # module's GraphQL ping (e.g. "ai_agent_core_engine.main:dispatch_graphql").
+    # When set, the gateway runs `{ ping }` through it and returns the result;
+    # when unset, ping is answered with a lightweight gateway-level pong.
+    ping_dispatch: Optional[str] = None
+
     @model_validator(mode="after")
     def _check_dispatch_required(self) -> "RouteSpec":
         # WebSocket routes may omit dispatch (the handler manages its own loop).
@@ -622,6 +628,7 @@ def _make_websocket_handler(
     dispatch_fn: Optional[Callable],
     connection_manager: Any = None,
     auth_provider: str = "local",
+    ping_dispatch_fn: Optional[Callable] = None,
 ) -> Callable:
     """Create an async WebSocket handler that authenticates, registers the
     connection, and dispatches incoming messages.
@@ -633,7 +640,8 @@ def _make_websocket_handler(
     4. Sends a ``connection_ack`` message with the assigned ``connection_id``
     5. Loops: receives a JSON message → dispatches in the thread pool → sends response
        (a ``ping`` message — ``{"action": "ping"}`` or ``{"type": "ping"}`` — is
-       answered with a ``pong`` at the gateway, without a model dispatch)
+       answered with a ``pong``: when ``ping_dispatch_fn`` is set, by running the
+       module's GraphQL ``{ ping }`` end-to-end; otherwise with a gateway-level pong)
     6. Unregisters on disconnect
 
     Args:
@@ -642,6 +650,9 @@ def _make_websocket_handler(
             incoming request.
         connection_manager: The ``ConnectionManager`` instance.
         auth_provider: ``"local"`` or ``"cognito"`` — selects the JWT verifier.
+        ping_dispatch_fn: Optional callable (the module's GraphQL dispatch) used
+            to answer ``ping`` by running ``{ ping }``. If ``None``, ping is
+            answered with a lightweight gateway-level pong.
     """
     import uuid
 
@@ -672,21 +683,63 @@ def _make_websocket_handler(
             while True:
                 message = await websocket.receive_json()
 
-                # Lightweight liveness check: a client can invoke "ping" over the
-                # socket to confirm the connection is alive (and keep it warm)
-                # without triggering a model dispatch. Handled at the gateway so
-                # every WebSocket route supports it. Mirrors ai_agent_core_engine's
-                # GraphQL ping response ("Hello at <time>!!").
+                # Liveness check: a client can invoke "ping" over the socket to
+                # confirm the connection is alive (and keep it warm) without
+                # triggering a model dispatch. When the route configures a
+                # ping_dispatch, the gateway runs the module's GraphQL `{ ping }`
+                # so the check is end-to-end (gateway → module); otherwise it
+                # answers with a lightweight gateway-level pong.
                 if isinstance(message, dict) and (
                     message.get("action") == "ping" or message.get("type") == "ping"
                 ):
-                    pong = {
-                        "type": "pong",
-                        "connection_id": connection_id,
-                        "message": f"Hello at {time.strftime('%X')}!!",
-                    }
+                    pong = {"type": "pong", "connection_id": connection_id}
                     if message.get("id") is not None:
                         pong["id"] = message["id"]
+
+                    if ping_dispatch_fn is not None:
+                        gql_params = {
+                            "query": "{ ping }",
+                            "endpoint_id": endpoint_id,
+                            "part_id": part_id,
+                            "partition_key": partition_key,
+                            "context": {
+                                "partition_key": partition_key,
+                                "part_id": part_id,
+                                "endpoint_id": endpoint_id,
+                                "connection_id": connection_id,
+                                "user": user,
+                            },
+                        }
+                        try:
+                            loop = asyncio.get_running_loop()
+                            result = await loop.run_in_executor(
+                                _executor,
+                                lambda: ping_dispatch_fn(**gql_params),
+                            )
+                            # Normalize the GraphQL response (mirror the HTTP path).
+                            body = (
+                                result.get("body", result)
+                                if isinstance(result, dict)
+                                else result
+                            )
+                            data = json.loads(body) if isinstance(body, str) else body
+                            pong["result"] = data
+                            if isinstance(data, dict) and isinstance(
+                                data.get("data"), dict
+                            ):
+                                ping_val = data["data"].get("ping")
+                                if ping_val is not None:
+                                    pong["message"] = ping_val
+                        except Exception as exc:
+                            logger.warning(
+                                "WebSocket ping dispatch failed for %s: %s",
+                                connection_id,
+                                exc,
+                            )
+                            pong["error"] = str(exc)
+                    else:
+                        pong["message"] = f"Hello at {time.strftime('%X')}!!"
+
                     await websocket.send_json(pong)
                     continue
 
@@ -922,10 +975,23 @@ def build_router_from_manifest(
                         )
                         continue
 
+                # Resolve the optional ping dispatch (module GraphQL ping).
+                ws_ping_dispatch_fn = None
+                if route.ping_dispatch:
+                    try:
+                        ws_ping_dispatch_fn = resolve_dispatch(route.ping_dispatch)
+                    except (ImportError, AttributeError, TypeError) as e:
+                        logger.warning(
+                            f"WebSocket route {route.path} in {module.name}: "
+                            f"ping_dispatch '{route.ping_dispatch}' failed to resolve — "
+                            f"falling back to gateway-level pong: {e}"
+                        )
+
                 handler = _make_websocket_handler(
                     dispatch_fn=ws_dispatch_fn,
                     connection_manager=connection_manager,
                     auth_provider=auth_provider,
+                    ping_dispatch_fn=ws_ping_dispatch_fn,
                 )
 
                 # WebSocket routes do not use HTTP auth dependencies

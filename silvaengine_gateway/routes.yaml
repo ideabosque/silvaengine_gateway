@@ -187,4 +187,6 @@ modules:
       - path: "/{endpoint_id}/ai_agent_core_ws"
         handler_type: websocket
         dispatch: "ai_agent_core_engine.main:dispatch_ask_model"
+        # A "ping" message runs the module's GraphQL `{ ping }` end-to-end.
+        ping_dispatch: "ai_agent_core_engine.main:dispatch_graphql"
         auth: true

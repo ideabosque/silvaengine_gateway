@@ -441,3 +441,70 @@ def test_websocket_ping_returns_pong_without_dispatch():
     # ping must never trigger a model dispatch
     assert dispatch_calls == []
 
+
+def test_websocket_ping_invokes_module_graphql_ping():
+    """When ping_dispatch is set, ping runs the module's GraphQL `{ ping }`."""
+    ask_calls = []
+    graphql_calls = []
+
+    def fake_ask(**params):
+        ask_calls.append(params)
+        return {"result": "done"}
+
+    def fake_graphql(**params):
+        graphql_calls.append(params)
+        return {"data": {"ping": "Hello at 12:00:00!!"}}
+
+    def resolve(path):
+        return fake_graphql if path.endswith("dispatch_graphql") else fake_ask
+
+    module = ModuleSpec(
+        name="test_module",
+        package="test_module",
+        transport="hybrid",
+        routes=[
+            RouteSpec(
+                path="/{endpoint_id}/ws",
+                handler_type="websocket",
+                dispatch="test_module.main:dispatch_ask_model",
+                ping_dispatch="test_module.main:dispatch_graphql",
+                auth=True,
+            ),
+        ],
+    )
+
+    cm = ConnectionManager()
+    app = FastAPI()
+    with patch(
+        "silvaengine_gateway.router_builder.resolve_dispatch",
+        side_effect=resolve,
+    ):
+        router = build_router_from_manifest(
+            [module],
+            connection_manager=cm,
+            auth_provider="local",
+        )
+    app.include_router(router)
+
+    token = create_local_jwt({"username": "testuser"})
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            f"/gpt/ws?token={token}&part_id=tenant1"
+        ) as ws:
+            assert ws.receive_json()["type"] == "connection_ack"
+
+            ws.send_json({"action": "ping", "id": "p1"})
+            pong = ws.receive_json()
+            assert pong["type"] == "pong"
+            assert pong["id"] == "p1"
+            # Full GraphQL envelope is returned, plus the extracted ping message
+            assert pong["result"] == {"data": {"ping": "Hello at 12:00:00!!"}}
+            assert pong["message"] == "Hello at 12:00:00!!"
+
+    # ping ran the GraphQL dispatch, never the model dispatch
+    assert len(graphql_calls) == 1
+    assert graphql_calls[0]["query"] == "{ ping }"
+    assert graphql_calls[0]["partition_key"] == "gpt#tenant1"
+    assert ask_calls == []
+
