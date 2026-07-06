@@ -173,6 +173,8 @@ additions.
 | `call_mcp_graphql.py` | Test MCP Daemon GraphQL |
 | `call_mcp_rest.py` | Test MCP JSON-RPC REST |
 | `call_mcp_sse.py` | Test SSE stream + message posting |
+| `call_websocket.py` | Test ai_agent_core_engine WebSocket streaming (ask_model) |
+| `ping_websocket.py` | Ping a WebSocket route (liveness/keepalive; default ai_agent_core_ws) |
 
 ## MCP Daemon Engine Integration
 

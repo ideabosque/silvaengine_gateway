@@ -382,3 +382,62 @@ def test_websocket_drains_stream_chunks_before_dispatch_result():
     assert second["is_message_end"] is True
     assert result == {"status": "ok"}
 
+
+def test_websocket_ping_returns_pong_without_dispatch():
+    """A ping message is answered with a pong at the gateway, no model dispatch."""
+    dispatch_calls = []
+
+    def fake_dispatch(**params):
+        dispatch_calls.append(params)
+        return {"result": "done"}
+
+    module = ModuleSpec(
+        name="test_module",
+        package="test_module",
+        transport="hybrid",
+        routes=[
+            RouteSpec(
+                path="/{endpoint_id}/ws",
+                handler_type="websocket",
+                dispatch="test_module.main:fake_dispatch",
+                auth=True,
+            ),
+        ],
+    )
+
+    cm = ConnectionManager()
+    app = FastAPI()
+    with patch(
+        "silvaengine_gateway.router_builder.resolve_dispatch",
+        return_value=fake_dispatch,
+    ):
+        router = build_router_from_manifest(
+            [module],
+            connection_manager=cm,
+            auth_provider="local",
+        )
+    app.include_router(router)
+
+    token = create_local_jwt({"username": "testuser"})
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            f"/gpt/ws?token={token}&part_id=tenant1"
+        ) as ws:
+            assert ws.receive_json()["type"] == "connection_ack"
+
+            # action-style ping, with a correlation id echoed back
+            ws.send_json({"action": "ping", "id": "abc"})
+            pong = ws.receive_json()
+            assert pong["type"] == "pong"
+            assert pong["id"] == "abc"
+            assert pong["message"].startswith("Hello at")
+            assert "connection_id" in pong
+
+            # type-style ping is also accepted
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json()["type"] == "pong"
+
+    # ping must never trigger a model dispatch
+    assert dispatch_calls == []
+

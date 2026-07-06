@@ -632,6 +632,8 @@ def _make_websocket_handler(
     3. Accepts the WebSocket and registers it with the ConnectionManager
     4. Sends a ``connection_ack`` message with the assigned ``connection_id``
     5. Loops: receives a JSON message → dispatches in the thread pool → sends response
+       (a ``ping`` message — ``{"action": "ping"}`` or ``{"type": "ping"}`` — is
+       answered with a ``pong`` at the gateway, without a model dispatch)
     6. Unregisters on disconnect
 
     Args:
@@ -669,6 +671,24 @@ def _make_websocket_handler(
 
             while True:
                 message = await websocket.receive_json()
+
+                # Lightweight liveness check: a client can invoke "ping" over the
+                # socket to confirm the connection is alive (and keep it warm)
+                # without triggering a model dispatch. Handled at the gateway so
+                # every WebSocket route supports it. Mirrors ai_agent_core_engine's
+                # GraphQL ping response ("Hello at <time>!!").
+                if isinstance(message, dict) and (
+                    message.get("action") == "ping" or message.get("type") == "ping"
+                ):
+                    pong = {
+                        "type": "pong",
+                        "connection_id": connection_id,
+                        "message": f"Hello at {time.strftime('%X')}!!",
+                    }
+                    if message.get("id") is not None:
+                        pong["id"] = message["id"]
+                    await websocket.send_json(pong)
+                    continue
 
                 if dispatch_fn is None:
                     await websocket.send_json({
