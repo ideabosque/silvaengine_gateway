@@ -36,6 +36,12 @@ class FlexJWTMiddleware(BaseHTTPMiddleware):
         return False
 
     async def dispatch(self, request: Request, call_next):
+        # Never authenticate CORS preflight — OPTIONS requests carry no
+        # Authorization header and must reach the CORS middleware to get
+        # Access-Control-* headers.
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         if self._is_public(request.url.path):
             return await call_next(request)
 
