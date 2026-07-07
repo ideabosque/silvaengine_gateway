@@ -152,6 +152,36 @@ modules:
         methods: ["GET"]
         auth: true
 
+  # ── Client Engine ────────────────────────────────────────────────────
+  - name: client_engine
+    package: client_engine
+    transport: graphql
+    config_class: "client_engine.handlers.config:Config"
+    config_init_style: kwargs
+    config_overrides:
+      pg_table_prefix: "{setting:ce_pg_table_prefix}"
+    routes:
+      - path: "/{endpoint_id}/client_graphql"
+        handler_type: graphql
+        dispatch: "client_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+
+  # ── Setting Core Engine ─────────────────────────────────────────────
+  - name: setting_core_engine
+    package: setting_core_engine
+    transport: graphql
+    config_class: "setting_core_engine.handlers.config:Config"
+    config_init_style: kwargs
+    config_overrides:
+      pg_table_prefix: "{setting:sce_pg_table_prefix}"
+    routes:
+      - path: "/{endpoint_id}/setting_core_graphql"
+        handler_type: graphql
+        dispatch: "setting_core_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+
   # ── AI Coordination Engine ──────────────────────────────────────────
   - name: ai_coordination_engine
     package: ai_coordination_engine
