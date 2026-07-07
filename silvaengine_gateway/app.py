@@ -716,6 +716,8 @@ def build_setting_from_env() -> Dict[str, Any]:
         # ai_agent_core_engine defaults its own prefix to "aace_"; keep that
         # default here so table names are unchanged when the env var is unset.
         "aace_pg_table_prefix": os.getenv("AACE_PG_TABLE_PREFIX", "aace_"),
+        "ce_pg_table_prefix": os.getenv("CE_PG_TABLE_PREFIX", "ce_"),
+        "sce_pg_table_prefix": os.getenv("SCE_PG_TABLE_PREFIX", "sce_"),
         # MCP Daemon Engine - forwarded to mcp_daemon_engine.handlers.config:Config
         "transport": os.getenv("MCP_TRANSPORT", "sse"),
         "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
