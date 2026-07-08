@@ -68,6 +68,9 @@ def load_env():
                     continue
                 key, _, value = line.partition("=")
                 key, value = key.strip(), value.strip()
+                # Strip inline comments (e.g. KEY=value  # comment)
+                if " #" in value:
+                    value = value.split(" #", 1)[0].strip()
                 if key and key not in os.environ:
                     os.environ[key] = value
 
