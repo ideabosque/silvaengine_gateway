@@ -128,3 +128,35 @@ def test_build_setting_from_env_internal_mcp_generates_local_admin_token(monkeyp
     assert claims["role"] == "admin"
     assert claims["perm"] is True
 
+
+def test_build_setting_from_env_internal_mcp_cognito_no_client_empty_token(monkeypatch):
+    """Cognito auth with no Cognito client → empty bearer token (no crash)."""
+    monkeypatch.setenv("internal_mcp_base_url", "http://localhost:8765")
+    monkeypatch.setenv("part_id", "nestaging")
+    monkeypatch.delenv("internal_mcp_bearer_token", raising=False)
+    monkeypatch.setenv("GATEWAY_AUTH_PROVIDER", "cognito")
+    monkeypatch.setenv("internal_mcp_token_username", "admin")
+    monkeypatch.setenv("internal_mcp_token_password", "admin123")
+    monkeypatch.delenv("FUNCTS_ON_LOCAL_OVERRIDES", raising=False)
+    # Clear Cognito + AWS creds so no real AWS client is created.
+    monkeypatch.delenv("COGNITO_USER_POOL_ID", raising=False)
+    monkeypatch.delenv("COGNITO_APP_CLIENT_ID", raising=False)
+    monkeypatch.delenv("COGNITO_APP_SECRET", raising=False)
+    monkeypatch.delenv("COGNITO_JWKS_URL", raising=False)
+    monkeypatch.delenv("region_name", raising=False)
+    monkeypatch.delenv("aws_access_key_id", raising=False)
+    monkeypatch.delenv("aws_secret_access_key", raising=False)
+    # Reset GatewayConfig so it re-initializes with the cleared env.
+    from silvaengine_gateway.config import GatewayConfig
+    GatewayConfig.reset()
+
+    from silvaengine_gateway.app import build_setting_from_env
+
+    # Must NOT raise — no eager HTTP call, no WinError 10061.
+    setting = build_setting_from_env()
+
+    mcp = setting["internal_mcp"]
+    assert mcp["base_url"] == "http://localhost:8765/{endpoint_id}/mcp"
+    # No Cognito client → empty token, but no crash.
+    assert mcp["bearer_token"] == ""
+

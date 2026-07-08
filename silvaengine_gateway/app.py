@@ -348,8 +348,60 @@ def _fetch_internal_mcp_token(token_url: str, username: str, password: str) -> s
     return body.get("access_token") or body.get("token") or ""
 
 
+def _generate_cognito_internal_mcp_token(username: str, password: str) -> str:
+    """Generate an internal MCP bearer token via the Cognito IdP SDK.
+
+    Uses GatewayConfig.aws_cognito_idp directly — no HTTP call to the
+    gateway's own /auth/token endpoint, so it works at startup before the
+    daemon is listening.  Returns an empty string on any failure so the
+    caller can fall through to the lazy-fetch path.
+    """
+    import base64
+    import hashlib
+    import hmac
+
+    client = GatewayConfig.aws_cognito_idp
+    if client is None:
+        return ""
+
+    client_id = GatewayConfig.cognito_app_client_id
+    client_secret = GatewayConfig.cognito_app_secret
+    secret_hash = ""
+    if client_id and client_secret:
+        message = (username + client_id).encode("utf-8")
+        key = client_secret.encode("utf-8")
+        digest = hmac.new(key, message, hashlib.sha256).digest()
+        secret_hash = base64.b64encode(digest).decode()
+
+    try:
+        resp = client.initiate_auth(
+            AuthFlow="USER_PASSWORD_AUTH",
+            ClientId=client_id,
+            AuthParameters={
+                "USERNAME": username,
+                "PASSWORD": password,
+                "SECRET_HASH": secret_hash,
+            },
+        )
+        tokens = resp.get("AuthenticationResult", {})
+        return tokens.get("AccessToken", "")
+    except Exception as exc:
+        logger.warning(
+            "Cognito initiate_auth failed for internal MCP token: %s", exc
+        )
+        return ""
+
+
 def _resolve_internal_mcp_bearer_token(base_url: str) -> str:
-    """Resolve the bearer token used by ai_agent_core internal MCP calls."""
+    """Resolve the bearer token for internal MCP.
+
+    The token is generated via the gateway's own auth path — no HTTP call
+    to /auth/token, so it works at startup before the daemon is listening.
+
+    * Explicit ``internal_mcp_bearer_token`` env var wins.
+    * Local auth: JWT generated synchronously (no network I/O).
+    * Cognito auth: ``initiate_auth`` via the Cognito IdP SDK client.
+    """
     bearer_token = os.getenv("internal_mcp_bearer_token", "")
     if bearer_token:
         return bearer_token
@@ -359,21 +411,23 @@ def _resolve_internal_mcp_bearer_token(base_url: str) -> str:
     if not username or not password:
         return ""
 
-    if (
-        os.getenv("GATEWAY_AUTH_PROVIDER", os.getenv("AUTH_PROVIDER", "local"))
-        == "local"
-    ):
+    auth_provider = os.getenv(
+        "GATEWAY_AUTH_PROVIDER", os.getenv("AUTH_PROVIDER", "local")
+    )
+
+    if auth_provider == "local":
         return _generate_local_internal_mcp_token(username, password)
 
-    token_url = _internal_mcp_token_url(base_url)
-    if not token_url:
-        return ""
+    if auth_provider == "cognito":
+        token = _generate_cognito_internal_mcp_token(username, password)
+        if token:
+            return token
+        logger.warning(
+            "Cognito IdP client not available or auth failed; "
+            "internal MCP bearer token will be empty."
+        )
 
-    try:
-        return _fetch_internal_mcp_token(token_url, username, password)
-    except Exception as exc:
-        logger.warning("Failed to fetch internal MCP bearer token: %s", exc)
-        return ""
+    return ""
 
 
 def _build_internal_mcp_config() -> Dict[str, Any] | None:
@@ -723,16 +777,24 @@ def build_setting_from_env() -> Dict[str, Any]:
         "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
         "funct_zip_path": os.getenv("FUNCT_ZIP_PATH"),
         "funct_extract_path": os.getenv("FUNCT_EXTRACT_PATH"),
-        # Internal MCP server — forwarded to ai_agent_core_engine.handlers.config:Config
-        # Used by _get_agent() to fetch agent MCP server config at runtime.
-        "internal_mcp": _build_internal_mcp_config(),
-        # Shared-store backends (multi-process support)
-        "task_backend": os.getenv("GATEWAY_TASK_BACKEND", "memory"),
-        "task_table": os.getenv("GATEWAY_TASK_TABLE"),
-        "task_ttl": os.getenv("GATEWAY_TTL"),
-        "rate_limit_backend": os.getenv("GATEWAY_RATE_LIMIT_BACKEND", "memory"),
-        "rate_limit_table": os.getenv("GATEWAY_RATE_LIMIT_TABLE"),
     }
+
+    # Initialize GatewayConfig early so the Cognito IdP client is available
+    # when _build_internal_mcp_config() resolves the bearer token below.
+    # GatewayConfig.initialize() is idempotent — create_app() will no-op.
+    _gw_logger = logging.getLogger("silvaengine_gateway")
+    GatewayConfig.initialize(_gw_logger, setting)
+
+    # Internal MCP server — forwarded to ai_agent_core_engine.handlers.config:Config
+    # Used by _get_agent() to fetch agent MCP server config at runtime.
+    setting["internal_mcp"] = _build_internal_mcp_config()
+
+    # Shared-store backends (multi-process support)
+    setting["task_backend"] = os.getenv("GATEWAY_TASK_BACKEND", "memory")
+    setting["task_table"] = os.getenv("GATEWAY_TASK_TABLE")
+    setting["task_ttl"] = os.getenv("GATEWAY_TTL")
+    setting["rate_limit_backend"] = os.getenv("GATEWAY_RATE_LIMIT_BACKEND", "memory")
+    setting["rate_limit_table"] = os.getenv("GATEWAY_RATE_LIMIT_TABLE")
 
     # Build functs_on_local from route manifest (data-driven, no hard-coded module names)
     # Each module with a config_class and graphql routes gets a local-function entry.
