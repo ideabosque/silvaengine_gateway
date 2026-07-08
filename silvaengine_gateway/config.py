@@ -135,9 +135,10 @@ class GatewayConfig:
             cls.issuer = (
                 f"https://cognito-idp.{region}.amazonaws.com/{cls.cognito_user_pool_id}"
             )
-            cls.jwks_endpoint = setting.get(
-                "cognito_jwks_url",
-                os.getenv("COGNITO_JWKS_URL", f"{cls.issuer}/.well-known/jwks.json"),
+            cls.jwks_endpoint = (
+                setting.get("cognito_jwks_url")
+                or os.getenv("COGNITO_JWKS_URL")
+                or f"{cls.issuer}/.well-known/jwks.json"
             )
             cls.jwks_cache_ttl = int(setting.get("jwks_cache_ttl", os.getenv("JWKS_CACHE_TTL", "3600")))
 
