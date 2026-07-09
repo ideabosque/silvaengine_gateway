@@ -51,16 +51,34 @@ def _get_local_token(username: str, password: str) -> Dict[str, Any]:
 
 
 def _get_cognito_token(username: str, password: str) -> Dict[str, Any]:
-    resp = GatewayConfig.aws_cognito_idp.initiate_auth(
-        AuthFlow="USER_PASSWORD_AUTH",
-        ClientId=GatewayConfig.cognito_app_client_id,
-        AuthParameters={
-            "USERNAME": username,
-            "PASSWORD": password,
-            "SECRET_HASH": _secret_hash(username),
-        },
-    )
-    tokens = resp["AuthenticationResult"]
+    from botocore.exceptions import ClientError
+
+    try:
+        resp = GatewayConfig.aws_cognito_idp.initiate_auth(
+            AuthFlow="USER_PASSWORD_AUTH",
+            ClientId=GatewayConfig.cognito_app_client_id,
+            AuthParameters={
+                "USERNAME": username,
+                "PASSWORD": password,
+                "SECRET_HASH": _secret_hash(username),
+            },
+        )
+    except ClientError as e:
+        # Map Cognito auth failures to proper HTTP codes instead of a 500.
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("NotAuthorizedException", "UserNotFoundException"):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if code == "UserNotConfirmedException":
+            raise HTTPException(status_code=403, detail="User is not confirmed")
+        raise HTTPException(status_code=502, detail=f"Cognito auth error: {code}")
+
+    # A challenge (e.g. NEW_PASSWORD_REQUIRED) returns no tokens.
+    tokens = resp.get("AuthenticationResult")
+    if not tokens:
+        raise HTTPException(
+            status_code=401,
+            detail=f"Auth challenge required: {resp.get('ChallengeName', 'unknown')}",
+        )
     return {"access_token": tokens["AccessToken"], "token_type": "bearer"}
 
 
