@@ -1,0 +1,246 @@
+# SilvaEngine Gateway — Setting Manifest
+#
+# Declares the env -> setting contract. This file holds NO values or secrets:
+# it only maps each setting key to the environment variable(s) it reads, an
+# optional default, and an optional type. Actual values come from os.environ
+# (populated from .env by run_daemon / run_gateway) at startup.
+#
+# Loaded by setting_builder.build_setting_from_env(), which produces the dict
+# handed to create_app() and forwarded to every module's Config.initialize().
+#
+# Adding a setting = adding an entry here. No Python changes.
+#
+# Entry shape:
+#   <setting_key>:
+#     env: ENV_NAME              # or [FIRST, SECOND] — first non-empty wins
+#     default: value             # optional; omit -> None. Quote numeric strings.
+#     type: int | float          # optional; coerce the resolved string
+#
+# Resolution: the first env var with a non-empty value wins; otherwise the
+# default is used; otherwise the key is None.
+#
+# NOTE: computed settings are NOT listed here — they are derived in
+# setting_builder.py because they need code:
+#   internal_mcp    - built from the internal MCP env contract
+#   functs_on_local - derived from the route manifest
+
+settings:
+  # ── AWS (shared with core) ─────────────────────────────────────────────
+  region_name:
+    env: region_name
+  aws_access_key_id:
+    env: aws_access_key_id
+  aws_secret_access_key:
+    env: aws_secret_access_key
+
+  # ── Tenant ────────────────────────────────────────────────────────────
+  endpoint_id:
+    env: endpoint_id
+  part_id:
+    env: part_id
+
+  # ── Auth (gateway-specific) ───────────────────────────────────────────
+  auth_provider:
+    env: [GATEWAY_AUTH_PROVIDER, AUTH_PROVIDER]
+    default: local
+  jwt_secret_key:
+    env: JWT_SECRET_KEY
+    default: CHANGEME
+  jwt_algorithm:
+    env: JWT_ALGORITHM
+    default: HS256
+  access_token_exp:
+    env: ACCESS_TOKEN_EXP
+    default: "15"
+  admin_username:
+    env: ADMIN_USERNAME
+    default: ""
+  admin_password:
+    env: ADMIN_PASSWORD
+    default: ""
+  admin_static_token:
+    env: ADMIN_STATIC_TOKEN
+    default: ""
+  local_user_file:
+    env: LOCAL_USER_FILE
+
+  # ── Cognito ───────────────────────────────────────────────────────────
+  cognito_user_pool_id:
+    env: COGNITO_USER_POOL_ID
+    default: ""
+  cognito_app_client_id:
+    env: COGNITO_APP_CLIENT_ID
+    default: ""
+  cognito_app_secret:
+    env: COGNITO_APP_SECRET
+    default: ""
+  cognito_jwks_url:
+    env: COGNITO_JWKS_URL
+
+  # ── Server ────────────────────────────────────────────────────────────
+  host:
+    env: GATEWAY_HOST
+    default: 0.0.0.0
+  port:
+    env: GATEWAY_PORT
+    default: "8000"
+  workers:
+    env: GATEWAY_WORKERS
+    default: "1"
+
+  # ── Route manifest ────────────────────────────────────────────────────
+  routes_config_path:
+    env: GATEWAY_ROUTES_CONFIG_PATH
+
+  # ── Tables ────────────────────────────────────────────────────────────
+  initialize_tables:
+    env: initialize_tables
+    default: "0"
+    type: int
+
+  # ── LLM (shared with core) ────────────────────────────────────────────
+  llm_type:
+    env: llm_type
+    default: openai
+  llm_name:
+    env: llm_name
+    default: gpt-4o
+  openai_api_key:
+    env: openai_api_key
+  openai_base_url:
+    env: openai_base_url
+  anthropic_api_key:
+    env: anthropic_api_key
+  anthropic_base_url:
+    env: anthropic_base_url
+  ollama_host:
+    env: ollama_host
+    default: http://localhost:11434
+  mistralai_api_key:
+    env: mistralai_api_key
+  vertexai_system_instruction:
+    env: vertexai_system_instruction
+
+  # ── Embeddings ────────────────────────────────────────────────────────
+  embedding_provider:
+    env: embedding_provider
+  embedding_model:
+    env: embedding_model
+    default: text-embedding-3-small
+
+  # ── Neo4j ─────────────────────────────────────────────────────────────
+  neo4j_uri:
+    env: neo4j_uri
+    default: bolt://localhost:7687
+  neo4j_username:
+    env: neo4j_username
+    default: neo4j
+  neo4j_password:
+    env: neo4j_password
+  neo4j_database:
+    env: neo4j_database
+    default: neo4j
+
+  # ── Cache ─────────────────────────────────────────────────────────────
+  cache_enabled:
+    env: cache_enabled
+    default: "0"
+    type: int
+
+  # ── Dual-backend selection (forwarded to all module Configs) ──────────
+  # db_backend: "dynamodb" (default) or "postgresql". When "postgresql",
+  # db_* are used instead of DynamoDB. DATABASE_URL takes precedence over
+  # the individual PG_* vars where consumers support it (Alembic).
+  db_backend:
+    env: db_backend
+    default: dynamodb
+  db_host:
+    env: [PG_HOST, db_host]
+  db_port:
+    env: [PG_PORT, db_port]
+  db_user:
+    env: [PG_USER, db_user]
+  db_password:
+    env: [PG_PASSWORD, db_password]
+  db_schema:
+    env: [PG_DB, db_schema]
+  database_url:
+    env: DATABASE_URL
+
+  # Per-module PG table prefixes — referenced by config_overrides in
+  # routes.yaml via {setting:kge_pg_table_prefix} etc. Each module gets its
+  # own prefix to avoid table-name collisions in a shared database.
+  kge_pg_table_prefix:
+    env: KGE_PG_TABLE_PREFIX
+    default: kge_
+  rfq_pg_table_prefix:
+    env: RFQ_PG_TABLE_PREFIX
+    default: rfq_
+  ace_pg_table_prefix:
+    env: ACE_PG_TABLE_PREFIX
+    default: ace_
+  # ai_agent_core_engine defaults its own prefix to "aace_"; keep that default
+  # here so table names are unchanged when the env var is unset.
+  aace_pg_table_prefix:
+    env: AACE_PG_TABLE_PREFIX
+    default: aace_
+  ce_pg_table_prefix:
+    env: CE_PG_TABLE_PREFIX
+    default: ce_
+  sce_pg_table_prefix:
+    env: SCE_PG_TABLE_PREFIX
+    default: sce_
+
+  # ── Shared-store backends (multi-process support) ─────────────────────
+  task_backend:
+    env: GATEWAY_TASK_BACKEND
+    default: memory
+  task_table:
+    env: GATEWAY_TASK_TABLE
+  # GATEWAY_TTL is the legacy name kept for compatibility; GATEWAY_TASK_TTL
+  # is the documented one (.env.example / docs).
+  task_ttl:
+    env: [GATEWAY_TASK_TTL, GATEWAY_TTL]
+  rate_limit_backend:
+    env: GATEWAY_RATE_LIMIT_BACKEND
+    default: memory
+  rate_limit_table:
+    env: GATEWAY_RATE_LIMIT_TABLE
+
+  # ── MCP Daemon Engine (forwarded to mcp_daemon_engine Config) ─────────
+  transport:
+    env: MCP_TRANSPORT
+    default: sse
+  funct_bucket_name:
+    env: FUNCT_BUCKET_NAME
+  funct_zip_path:
+    env: FUNCT_ZIP_PATH
+  funct_extract_path:
+    env: FUNCT_EXTRACT_PATH
+
+  # ── Hermes Agent API bridge (forwarded to a2a_daemon_engine Config) ───
+  HERMES_API_URL:
+    env: HERMES_API_URL
+  HERMES_API_KEY:
+    env: HERMES_API_KEY
+  HERMES_MODEL:
+    env: HERMES_MODEL
+    default: hermes-agent
+  HERMES_STREAM_TIMEOUT:
+    env: HERMES_STREAM_TIMEOUT
+    default: "300"
+
+  # ── A2A bridge — handler resolution via env vars ──────────────────────
+  A2A_AI_AGENT_MODULE:
+    env: A2A_AI_AGENT_MODULE
+  A2A_AI_AGENT_CLASS:
+    env: A2A_AI_AGENT_CLASS
+  A2A_DEFAULT_AGENT_UUID:
+    env: A2A_DEFAULT_AGENT_UUID
+    default: a2a-default-agent
+  A2A_STREAM_TIMEOUT:
+    env: A2A_STREAM_TIMEOUT
+    default: "120.0"
+  A2A_STREAMING_ENABLED:
+    env: A2A_STREAMING_ENABLED
+    default: "true"

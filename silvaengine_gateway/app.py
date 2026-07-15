@@ -11,35 +11,36 @@ from __future__ import print_function
 
 __author__ = "silvaengine"
 
-import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, Dict, List
 
-import yaml
 from fastapi import FastAPI
 
 from .config import GatewayConfig
+from .manifest import load_route_manifest
 from .middleware.rate_limit import RateLimitMiddleware
 from .router_builder import (
     ModuleSpec,
-    RouteSpec,
     build_router_from_manifest,
     validate_manifest,
     resolve_dispatch,
 )
+from .setting_builder import build_setting_from_env
 from .websocket_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
-_DEFAULT_INVOKER_CLASS_NAMES = {
-    "ai_agent_core_engine": "AIAgentCoreEngine",
-    "ai_coordination_engine": "AICoordinationEngine",
-    "rfq_engine": "RFQEngine",
-    "knowledge_graph_engine": "KnowledgeGraphEngine",
-    "mcp_daemon_engine": "MCPDaemonEngine",
-}
+
+# Re-exported for backward compatibility: callers (run_daemon, gen_token, tests)
+# import these from silvaengine_gateway.app. They now live in dedicated modules.
+__all__ = [
+    "create_app",
+    "create_app_from_env",
+    "run_gateway",
+    "build_setting_from_env",
+    "load_route_manifest",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -110,76 +111,6 @@ _promote_editable_finders()
 
 
 # ---------------------------------------------------------------------------
-# Route manifest loading
-# ---------------------------------------------------------------------------
-
-
-def load_route_manifest(config: GatewayConfig) -> List[ModuleSpec]:
-    """
-    Load route manifest from:
-    1. GATEWAY_ROUTES_CONFIG_PATH env var (YAML or JSON file)
-    2. routes.yaml packaged with the gateway
-    3. Built-in default (KGE only)
-    """
-    # Priority 1: explicit path
-    configured_path = config.routes_config_path or os.environ.get(
-        "GATEWAY_ROUTES_CONFIG_PATH"
-    )
-    routes_file = (
-        Path(configured_path)
-        if configured_path
-        else Path(__file__).parent / "routes.yaml"
-    )
-
-    if routes_file.exists():
-        try:
-            with open(routes_file) as f:
-                data = yaml.safe_load(f)
-            modules = data.get("modules", [])
-            return [ModuleSpec(**m) for m in modules]
-        except Exception as e:
-            logger.error(f"Failed to load routes from {routes_file}: {e}")
-            raise
-
-    # Priority 2: Built-in default (KGE only)
-    logger.info("No route manifest found - using built-in default (KGE only)")
-    return _default_manifest()
-
-
-def _default_manifest() -> List[ModuleSpec]:
-    """Built-in default route manifest - KGE only."""
-    return [
-        ModuleSpec(
-            name="knowledge_graph_engine",
-            package="knowledge_graph_engine",
-            transport="graphql",
-            routes=[
-                RouteSpec(
-                    path="/{endpoint_id}/knowledge_graph_graphql",
-                    handler_type="graphql",
-                    dispatch="knowledge_graph_engine.main:dispatch_graphql",
-                    methods=["POST"],
-                    auth=True,
-                ),
-                RouteSpec(
-                    path="/{endpoint_id}/extract",
-                    handler_type="background",
-                    dispatch="knowledge_graph_engine.main:dispatch_extract",
-                    methods=["POST"],
-                    auth=True,
-                ),
-                RouteSpec(
-                    path="/{endpoint_id}/extract/status/{task_id}",
-                    handler_type="task_status",
-                    methods=["GET"],
-                    auth=True,
-                ),
-            ],
-        )
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Shared-store backend selection (multi-process support)
 # ---------------------------------------------------------------------------
 
@@ -246,206 +177,6 @@ def _make_rate_limit_store(setting: Dict[str, Any], gw_logger: logging.Logger):
 
     gw_logger.info("Rate-limit backend: in-memory")
     return InMemoryRateLimitStore(), kind
-
-
-def _module_invoker_class_name(module: ModuleSpec) -> str:
-    """Return the class name used by downstream Invoker mappings."""
-    configured = os.getenv(f"FUNCTS_{module.name.upper()}_CLASS")
-    if configured:
-        return configured
-
-    default_name = _DEFAULT_INVOKER_CLASS_NAMES.get(module.package)
-    if default_name:
-        return default_name
-
-    if module.config_class:
-        config_name = module.config_class.rsplit(":", 1)[-1].rsplit(".", 1)[-1]
-        if config_name and config_name != "Config":
-            return config_name.replace("Config", "")
-
-    return "".join(part.capitalize() for part in module.package.split("_"))
-
-
-def _internal_mcp_base_url() -> str:
-    """Return the configured internal MCP gateway base URL."""
-    return os.getenv("internal_mcp_base_url", "").rstrip("/")
-
-
-def _build_internal_mcp_headers() -> Dict[str, Any]:
-    """Build static headers shared by all internal MCP calls.
-
-    The tenant Part-Id is added later by ai_agent_core from request context.
-    """
-    return {
-        "x-api-key": os.getenv("x-api-key"),
-        "Content-Type": "application/json",
-    }
-
-
-def _internal_mcp_token_url(base_url: str) -> str:
-    """Build the auth token URL from the internal MCP base URL."""
-    return f"{base_url}/auth/token" if base_url else ""
-
-
-def _generate_local_internal_mcp_token(username: str, password: str) -> str:
-    """Generate an internal MCP bearer token from local gateway credentials."""
-    admin_username = os.getenv("ADMIN_USERNAME", "")
-    admin_password = os.getenv("ADMIN_PASSWORD", "")
-    admin_static_token = os.getenv("ADMIN_STATIC_TOKEN", "")
-
-    if admin_username and admin_password:
-        if username == admin_username and password == admin_password:
-            if admin_static_token:
-                return admin_static_token
-            from jose import jwt
-
-            payload = {
-                "username": admin_username,
-                "role": "admin",
-                "perm": True,
-            }
-            return jwt.encode(
-                payload,
-                os.getenv("JWT_SECRET_KEY", "CHANGEME"),
-                algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
-            )
-
-    local_user_file = os.getenv("LOCAL_USER_FILE")
-    if local_user_file:
-        import pendulum
-        from jose import jwt
-
-        from .auth.users import load_users
-
-        user = load_users(local_user_file).get(username)
-        if user and user.verify(password):
-            exp = pendulum.now("UTC").add(
-                minutes=int(os.getenv("ACCESS_TOKEN_EXP", "15"))
-            )
-            return jwt.encode(
-                {"username": user.username, "roles": user.roles, "exp": exp},
-                os.getenv("JWT_SECRET_KEY", "CHANGEME"),
-                algorithm=os.getenv("JWT_ALGORITHM", "HS256"),
-            )
-
-    return ""
-
-
-def _fetch_internal_mcp_token(token_url: str, username: str, password: str) -> str:
-    """Fetch an OAuth-style token from an external auth endpoint."""
-    import json as _json
-    import urllib.parse
-    import urllib.request
-
-    data = urllib.parse.urlencode({"username": username, "password": password}).encode()
-    req = urllib.request.Request(
-        token_url,
-        data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        body = _json.loads(resp.read())
-    return body.get("access_token") or body.get("token") or ""
-
-
-def _generate_cognito_internal_mcp_token(username: str, password: str) -> str:
-    """Generate an internal MCP bearer token via the Cognito IdP SDK.
-
-    Uses GatewayConfig.aws_cognito_idp directly — no HTTP call to the
-    gateway's own /auth/token endpoint, so it works at startup before the
-    daemon is listening.  Returns an empty string on any failure so the
-    caller can fall through to the lazy-fetch path.
-    """
-    import base64
-    import hashlib
-    import hmac
-
-    client = GatewayConfig.aws_cognito_idp
-    if client is None:
-        return ""
-
-    client_id = GatewayConfig.cognito_app_client_id
-    client_secret = GatewayConfig.cognito_app_secret
-    secret_hash = ""
-    if client_id and client_secret:
-        message = (username + client_id).encode("utf-8")
-        key = client_secret.encode("utf-8")
-        digest = hmac.new(key, message, hashlib.sha256).digest()
-        secret_hash = base64.b64encode(digest).decode()
-
-    try:
-        resp = client.initiate_auth(
-            AuthFlow="USER_PASSWORD_AUTH",
-            ClientId=client_id,
-            AuthParameters={
-                "USERNAME": username,
-                "PASSWORD": password,
-                "SECRET_HASH": secret_hash,
-            },
-        )
-        tokens = resp.get("AuthenticationResult", {})
-        return tokens.get("AccessToken", "")
-    except Exception as exc:
-        logger.warning(
-            "Cognito initiate_auth failed for internal MCP token: %s", exc
-        )
-        return ""
-
-
-def _resolve_internal_mcp_bearer_token(base_url: str) -> str:
-    """Resolve the bearer token for internal MCP.
-
-    The token is generated via the gateway's own auth path — no HTTP call
-    to /auth/token, so it works at startup before the daemon is listening.
-
-    * Explicit ``internal_mcp_bearer_token`` env var wins.
-    * Local auth: JWT generated synchronously (no network I/O).
-    * Cognito auth: ``initiate_auth`` via the Cognito IdP SDK client.
-    """
-    bearer_token = os.getenv("internal_mcp_bearer_token", "")
-    if bearer_token:
-        return bearer_token
-
-    username = os.getenv("internal_mcp_token_username", "")
-    password = os.getenv("internal_mcp_token_password", "")
-    if not username or not password:
-        return ""
-
-    auth_provider = os.getenv(
-        "GATEWAY_AUTH_PROVIDER", os.getenv("AUTH_PROVIDER", "local")
-    )
-
-    if auth_provider == "local":
-        return _generate_local_internal_mcp_token(username, password)
-
-    if auth_provider == "cognito":
-        token = _generate_cognito_internal_mcp_token(username, password)
-        if token:
-            return token
-        logger.warning(
-            "Cognito IdP client not available or auth failed; "
-            "internal MCP bearer token will be empty."
-        )
-
-    return ""
-
-
-def _build_internal_mcp_config() -> Dict[str, Any] | None:
-    """Build ai_agent_core internal MCP config from one env contract.
-
-    URL shape follows the gateway routing contract: endpoint_id is formatted
-    into the path by ai_agent_core. Tenant part_id is added there from request
-    context as the Part-Id header.
-    """
-    base_url = _internal_mcp_base_url()
-    if not base_url:
-        return None
-
-    return {
-        "base_url": f"{base_url}/{{endpoint_id}}/mcp",
-        "bearer_token": _resolve_internal_mcp_bearer_token(base_url),
-        "headers": _build_internal_mcp_headers(),
-    }
 
 
 def _warn_multiprocess_compat(
@@ -689,154 +420,6 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     app.include_router(router)
 
     return app
-
-
-def build_setting_from_env() -> Dict[str, Any]:
-    """Build the gateway setting dict from environment variables.
-
-    Shared by the single-process and multi-worker (factory) launch paths so both
-    see an identical configuration.
-    """
-    setting = {
-        # AWS (shared with core)
-        "region_name": os.getenv("region_name"),
-        "aws_access_key_id": os.getenv("aws_access_key_id"),
-        "aws_secret_access_key": os.getenv("aws_secret_access_key"),
-        # Tenant
-        "endpoint_id": os.getenv("endpoint_id"),
-        "part_id": os.getenv("part_id"),
-        # Auth (gateway-specific)
-        "auth_provider": os.getenv(
-            "GATEWAY_AUTH_PROVIDER", os.getenv("AUTH_PROVIDER", "local")
-        ),
-        "jwt_secret_key": os.getenv("JWT_SECRET_KEY", "CHANGEME"),
-        "jwt_algorithm": os.getenv("JWT_ALGORITHM", "HS256"),
-        "access_token_exp": os.getenv("ACCESS_TOKEN_EXP", "15"),
-        "admin_username": os.getenv("ADMIN_USERNAME", ""),
-        "admin_password": os.getenv("ADMIN_PASSWORD", ""),
-        "admin_static_token": os.getenv("ADMIN_STATIC_TOKEN", ""),
-        "local_user_file": os.getenv("LOCAL_USER_FILE"),
-        # Cognito
-        "cognito_user_pool_id": os.getenv("COGNITO_USER_POOL_ID", ""),
-        "cognito_app_client_id": os.getenv("COGNITO_APP_CLIENT_ID", ""),
-        "cognito_app_secret": os.getenv("COGNITO_APP_SECRET", ""),
-        "cognito_jwks_url": os.getenv("COGNITO_JWKS_URL"),
-        # Server
-        "host": os.getenv("GATEWAY_HOST", "0.0.0.0"),
-        "port": os.getenv("GATEWAY_PORT", "8000"),
-        "workers": os.getenv("GATEWAY_WORKERS", "1"),
-        # Route manifest
-        "routes_config_path": os.getenv("GATEWAY_ROUTES_CONFIG_PATH"),
-        # Tables
-        "initialize_tables": int(os.getenv("initialize_tables", "0")),
-        # LLM (shared with core)
-        "llm_type": os.getenv("llm_type", "openai"),
-        "llm_name": os.getenv("llm_name", "gpt-4o"),
-        "openai_api_key": os.getenv("openai_api_key"),
-        "openai_base_url": os.getenv("openai_base_url"),
-        "anthropic_api_key": os.getenv("anthropic_api_key"),
-        "anthropic_base_url": os.getenv("anthropic_base_url"),
-        "ollama_host": os.getenv("ollama_host", "http://localhost:11434"),
-        "mistralai_api_key": os.getenv("mistralai_api_key"),
-        "vertexai_system_instruction": os.getenv("vertexai_system_instruction"),
-        # Embeddings
-        "embedding_provider": os.getenv("embedding_provider"),
-        "embedding_model": os.getenv("embedding_model", "text-embedding-3-small"),
-        # Neo4j
-        "neo4j_uri": os.getenv("neo4j_uri", "bolt://localhost:7687"),
-        "neo4j_username": os.getenv("neo4j_username", "neo4j"),
-        "neo4j_password": os.getenv("neo4j_password"),
-        "neo4j_database": os.getenv("neo4j_database", "neo4j"),
-        # Cache
-        "cache_enabled": int(os.getenv("cache_enabled", "0")),
-        # Dual-backend selection (forwarded to all module Configs)
-        # db_backend: "dynamodb" (default) or "postgresql"
-        # When "postgresql", db_host/db_port/db_user/db_password/db_schema are
-        # used instead of DynamoDB. Per-module table prefixes avoid collisions
-        # in shared databases (KGE uses kge_, RFQ uses rfq_, etc.).
-        # DATABASE_URL takes precedence over individual PG_* vars when set.
-        "db_backend": os.getenv("db_backend", "dynamodb"),
-        "db_host": os.getenv("PG_HOST") or os.getenv("db_host"),
-        "db_port": os.getenv("PG_PORT") or os.getenv("db_port"),
-        "db_user": os.getenv("PG_USER") or os.getenv("db_user"),
-        "db_password": os.getenv("PG_PASSWORD") or os.getenv("db_password"),
-        "db_schema": os.getenv("PG_DB") or os.getenv("db_schema"),
-        "database_url": os.getenv("DATABASE_URL"),
-        # Per-module PG table prefixes — referenced by config_overrides
-        # in routes.yaml via {setting:kge_pg_table_prefix} etc.
-        "kge_pg_table_prefix": os.getenv("KGE_PG_TABLE_PREFIX", "kge_"),
-        "rfq_pg_table_prefix": os.getenv("RFQ_PG_TABLE_PREFIX", "rfq_"),
-        "ace_pg_table_prefix": os.getenv("ACE_PG_TABLE_PREFIX", "ace_"),
-        # ai_agent_core_engine defaults its own prefix to "aace_"; keep that
-        # default here so table names are unchanged when the env var is unset.
-        "aace_pg_table_prefix": os.getenv("AACE_PG_TABLE_PREFIX", "aace_"),
-        "ce_pg_table_prefix": os.getenv("CE_PG_TABLE_PREFIX", "ce_"),
-        "sce_pg_table_prefix": os.getenv("SCE_PG_TABLE_PREFIX", "sce_"),
-        # MCP Daemon Engine - forwarded to mcp_daemon_engine.handlers.config:Config
-        "transport": os.getenv("MCP_TRANSPORT", "sse"),
-        "funct_bucket_name": os.getenv("FUNCT_BUCKET_NAME"),
-        "funct_zip_path": os.getenv("FUNCT_ZIP_PATH"),
-        "funct_extract_path": os.getenv("FUNCT_EXTRACT_PATH"),
-    }
-
-    # Initialize GatewayConfig early so the Cognito IdP client is available
-    # when _build_internal_mcp_config() resolves the bearer token below.
-    # GatewayConfig.initialize() is idempotent — create_app() will no-op.
-    _gw_logger = logging.getLogger("silvaengine_gateway")
-    GatewayConfig.initialize(_gw_logger, setting)
-
-    # Internal MCP server — forwarded to ai_agent_core_engine.handlers.config:Config
-    # Used by _get_agent() to fetch agent MCP server config at runtime.
-    setting["internal_mcp"] = _build_internal_mcp_config()
-
-    # Shared-store backends (multi-process support)
-    setting["task_backend"] = os.getenv("GATEWAY_TASK_BACKEND", "memory")
-    setting["task_table"] = os.getenv("GATEWAY_TASK_TABLE")
-    setting["task_ttl"] = os.getenv("GATEWAY_TTL")
-    setting["rate_limit_backend"] = os.getenv("GATEWAY_RATE_LIMIT_BACKEND", "memory")
-    setting["rate_limit_table"] = os.getenv("GATEWAY_RATE_LIMIT_TABLE")
-
-    # Build functs_on_local from route manifest (data-driven, no hard-coded module names)
-    # Each module with a config_class and graphql routes gets a local-function entry.
-    # Also, modules with websocket routes that need streaming (e.g. ai_agent_core_engine)
-    # get their auxiliary streaming functions (send_data_to_stream,
-    # async_insert_update_tool_call) added so the invoker resolves them locally.
-    manifest_for_functs = load_route_manifest(GatewayConfig)
-    functs_on_local: Dict[str, Any] = {}
-    for mod in manifest_for_functs:
-        if mod.config_class:
-            for route in mod.routes:
-                if route.handler_type == "graphql" and route.dispatch:
-                    # Invoker calls target class methods, not wrapper names.
-                    # e.g. "/{endpoint_id}/knowledge_graph_graphql" -> "knowledge_graph_graphql"
-                    func_name = route.path.rstrip("/").rsplit("/", 1)[-1]
-                    functs_on_local[func_name] = {
-                        "module_name": mod.package,
-                        "class_name": _module_invoker_class_name(mod),
-                    }
-
-                # WebSocket routes that need streaming require their
-                # auxiliary functions resolved locally by the invoker.
-                if route.handler_type == "websocket":
-                    class_name = _module_invoker_class_name(mod)
-                    # Core streaming bridge functions that must be local
-                    for aux_fn in (
-                        "send_data_to_stream",
-                        "async_insert_update_tool_call",
-                    ):
-                        functs_on_local.setdefault(
-                            aux_fn,
-                            {
-                                "module_name": mod.package,
-                                "class_name": class_name,
-                            },
-                        )
-
-    # Allow env var overrides / additions
-    functs_on_local.update(json.loads(os.getenv("FUNCTS_ON_LOCAL_OVERRIDES", "{}")))
-    setting["functs_on_local"] = functs_on_local
-
-    return setting
 
 
 def create_app_from_env() -> FastAPI:
