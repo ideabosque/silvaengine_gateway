@@ -220,3 +220,39 @@ modules:
         # A "ping" message runs the module's GraphQL `{ ping }` end-to-end.
         ping_dispatch: "ai_agent_core_engine.main:dispatch_graphql"
         auth: true
+
+  # ── A2A Daemon Engine ───────────────────────────────────────────────
+  - name: a2a_daemon_engine
+    package: a2a_daemon_engine
+    transport: hybrid
+    config_class: "a2a_daemon_engine.handlers.config:Config"
+    config_init_style: kwargs
+    on_shutdown: "a2a_daemon_engine.handlers.sse_manager:cleanup_sse"
+    sse_manager: "a2a_daemon_engine.handlers.sse_manager:sse_manager"
+    routes:
+      # GraphQL — A2A core queries/mutations (agents, tasks, messages, settings)
+      - path: "/{endpoint_id}/a2a_core_graphql"
+        handler_type: graphql
+        dispatch: "a2a_daemon_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+
+      # REST — A2A JSON-RPC 2.0 protocol handler (message/send, tasks/get, tasks/cancel)
+      - path: "/{endpoint_id}/a2a"
+        handler_type: rest
+        dispatch: "a2a_daemon_engine.main:dispatch_a2a"
+        methods: ["POST"]
+        auth: true
+
+      # SSE stream (GET) — long-lived per-partition A2A task event stream
+      - path: "/{endpoint_id}/a2a_sse"
+        handler_type: sse
+        methods: ["GET"]
+        auth: true
+
+      # SSE POST — A2A JSON-RPC message + SSE push to connected clients
+      - path: "/{endpoint_id}/a2a_sse"
+        handler_type: rest
+        dispatch: "a2a_daemon_engine.main:dispatch_sse_message"
+        methods: ["POST"]
+        auth: true

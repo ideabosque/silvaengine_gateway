@@ -44,6 +44,7 @@ _SIBLING_ROOTS = [
         "ai_coordination_engine",
         "client_engine",
         "setting_core_engine",
+        "a2a_daemon_engine",
     )
 ]
 for _p in [_PROJECT_ROOT, *_SIBLING_ROOTS]:

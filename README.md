@@ -25,6 +25,7 @@ changes, zero gateway Python code.
 | Knowledge Graph Engine | `knowledge_graph_engine` | `dict` | GraphQL, Extract, Extract Status |
 | RFQ Engine | `rfq_engine` | `dict` | GraphQL |
 | MCP Daemon Engine | `mcp_daemon_engine` | `dict` | GraphQL, REST, SSE, Background, Cache Admin, Info |
+| A2A Daemon Engine | `a2a_daemon_engine` | `kwargs` | GraphQL, A2A JSON-RPC, SSE |
 
 ## Requirements
 
@@ -87,6 +88,10 @@ Paths carry only `{ep}` (endpoint_id). The tenant partition id is sent in the
 | `POST` | `/{ep}/admin/cache/refresh` | Yes | MCP cache refresh |
 | `DELETE` | `/{ep}/admin/cache` | Yes | MCP cache clear |
 | `GET` | `/{ep}/mcp_info` | Yes | MCP endpoint info |
+| `POST` | `/{ep}/a2a_core_graphql` | Yes | A2A Daemon GraphQL |
+| `POST` | `/{ep}/a2a` | Yes | A2A JSON-RPC 2.0 protocol |
+| `GET` | `/{ep}/a2a_sse` | Yes | A2A SSE task event stream |
+| `POST` | `/{ep}/a2a_sse` | Yes | A2A JSON-RPC message + SSE push |
 
 > All tenant-scoped requests require a `Part-Id: <part_id>` header.
 
