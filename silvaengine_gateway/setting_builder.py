@@ -23,8 +23,10 @@ import functools
 import json
 import logging
 import os
+import threading
+import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 import yaml
 
@@ -215,20 +217,105 @@ def _resolve_internal_mcp_bearer_token(base_url: str) -> str:
     return ""
 
 
+# Re-mint the internal MCP token this many seconds before it actually expires,
+# so a call can't start with a token that dies mid-flight.
+_TOKEN_REFRESH_MARGIN_SECONDS = 60
+
+
+def _token_expiry(token: str) -> float | None:
+    """Return a token's ``exp`` (epoch seconds), or None if it never expires.
+
+    Both locally minted JWTs and Cognito access tokens are JWTs, so one claim
+    read covers both providers. Local admin tokens carry ``perm: True`` and no
+    ``exp`` — those never expire. Anything unreadable is treated as
+    non-expiring, since re-minting on every call would be worse than a stale
+    token that may still be valid.
+    """
+    try:
+        from jose import jwt as _jose_jwt
+
+        claims = _jose_jwt.get_unverified_claims(token)
+    except Exception:
+        return None
+
+    if claims.get("perm"):
+        return None
+    exp = claims.get("exp")
+    try:
+        return float(exp) if exp is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _make_internal_mcp_token_provider(base_url: str) -> Callable[[], str]:
+    """Return a cached, expiry-aware provider for the internal MCP bearer token.
+
+    ai_agent_core calls this once per request. Without it, the token resolved at
+    startup is frozen forever and internal MCP calls start returning 401 as soon
+    as it expires (~1h for Cognito; ACCESS_TOKEN_EXP for local user-file tokens)
+    until the gateway is restarted.
+
+    The token is re-minted only when it is within
+    ``_TOKEN_REFRESH_MARGIN_SECONDS`` of expiry, so the common path is a cheap
+    dict read rather than a Cognito round-trip on every MCP call. A lock keeps
+    concurrent gateway dispatch threads from stampeding ``initiate_auth``.
+
+    An explicitly configured ``internal_mcp_bearer_token`` is treated as static:
+    re-resolving would just return the same env value.
+    """
+    state: Dict[str, Any] = {"token": "", "exp": None}
+    lock = threading.Lock()
+    is_static = bool(os.getenv("internal_mcp_bearer_token", ""))
+
+    def _provider() -> str:
+        with lock:
+            token = state["token"]
+            exp = state["exp"]
+            if token and (
+                is_static
+                or exp is None
+                or time.time() < exp - _TOKEN_REFRESH_MARGIN_SECONDS
+            ):
+                return token
+
+            new_token = _resolve_internal_mcp_bearer_token(base_url)
+            if not new_token:
+                # Keep the previous token rather than going blank: it may still
+                # be valid, and a blank header is a guaranteed 401.
+                logger.warning(
+                    "Internal MCP token refresh returned empty; keeping previous token"
+                )
+                return token
+
+            state["token"] = new_token
+            state["exp"] = _token_expiry(new_token)
+            if token:
+                logger.info("Internal MCP bearer token refreshed")
+            return new_token
+
+    return _provider
+
+
 def _build_internal_mcp_config() -> Dict[str, Any] | None:
     """Build ai_agent_core internal MCP config from one env contract.
 
     URL shape follows the gateway routing contract: endpoint_id is formatted
     into the path by ai_agent_core. Tenant part_id is added there from request
     context as the Part-Id header.
+
+    ``token_provider`` lets ai_agent_core refresh the bearer token per request;
+    ``bearer_token`` is the initial value, kept so consumers that only read the
+    static field keep working.
     """
     base_url = _internal_mcp_base_url()
     if not base_url:
         return None
 
+    provider = _make_internal_mcp_token_provider(base_url)
     return {
         "base_url": f"{base_url}/{{endpoint_id}}/mcp",
-        "bearer_token": _resolve_internal_mcp_bearer_token(base_url),
+        "bearer_token": provider(),  # primes the cache; back-compat for readers
+        "token_provider": provider,
         "headers": _build_internal_mcp_headers(),
     }
 
