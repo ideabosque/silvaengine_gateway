@@ -85,7 +85,8 @@ class ConnectionManager:
         ``asyncio.run_coroutine_threadsafe()``.
 
         Returns ``True`` if the send was scheduled, ``False`` if the
-        connection is unknown or the event loop is unavailable.
+        connection is unknown, the event loop is unavailable, or the
+        WebSocket is already closing/closed.
         """
         with self._lock:
             websocket = self._connections.get(connection_id)
