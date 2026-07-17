@@ -46,7 +46,7 @@ def load_route_manifest(config: GatewayConfig) -> List[ModuleSpec]:
 
     if routes_file.exists():
         try:
-            with open(routes_file) as f:
+            with open(routes_file, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             modules = data.get("modules", [])
             return [ModuleSpec(**m) for m in modules]

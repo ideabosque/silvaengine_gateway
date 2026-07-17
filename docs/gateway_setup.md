@@ -113,6 +113,7 @@ Example:
     package: my_new_module
     transport: graphql
     config_class: "my_new_module.handlers.config:Config"
+    invoker_class_name: MyNewModule
     config_init_style: dict
     on_shutdown: "my_new_module.handlers.lifecycle:cleanup"
     exception_handlers:
@@ -159,9 +160,9 @@ Modules not installed are skipped with a warning.
 ### Cross-Module Function Routing
 
 `functs_on_local` is built automatically from the manifest — each module with a
-`config_class` and a `graphql` route gets an entry. Env var overrides:
-`FUNCTS_{NAME}_CLASS` for class name, `FUNCTS_ON_LOCAL_OVERRIDES` (JSON) for
-additions.
+`config_class` and a `graphql` route gets an entry. Class names use `FUNCTS_{NAME}_CLASS` when set; otherwise they come from
+`invoker_class_name` in `routes.yaml` when provided. `FUNCTS_ON_LOCAL_OVERRIDES` (JSON) can add or replace
+entries.
 
 ## Test Scripts
 

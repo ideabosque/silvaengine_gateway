@@ -49,9 +49,10 @@ def test_me_requires_auth():
     assert response.status_code == 401
 
 
-def test_build_setting_from_env_uses_default_invoker_class_names(monkeypatch):
-    """WebSocket helper functions map to concrete invoker classes by default."""
+def test_build_setting_from_env_uses_manifest_invoker_class_names(monkeypatch):
+    """functs_on_local class names come from routes.yaml by default."""
     monkeypatch.delenv("FUNCTS_AI_AGENT_CORE_ENGINE_CLASS", raising=False)
+    monkeypatch.delenv("FUNCTS_AI_MARKETING_ENGINE_CLASS", raising=False)
     monkeypatch.delenv("FUNCTS_KNOWLEDGE_GRAPH_ENGINE_CLASS", raising=False)
     monkeypatch.delenv("FUNCTS_ON_LOCAL_OVERRIDES", raising=False)
 
@@ -75,6 +76,10 @@ def test_build_setting_from_env_uses_default_invoker_class_names(monkeypatch):
     assert functs_on_local["rfq_graphql"] == {
         "module_name": "rfq_engine",
         "class_name": "RFQEngine",
+    }
+    assert functs_on_local["ai_marketing_graphql"] == {
+        "module_name": "ai_marketing_engine",
+        "class_name": "AIMarketingEngine",
     }
     assert functs_on_local["ai_agent_core_graphql"] == {
         "module_name": "ai_agent_core_engine",
