@@ -24,6 +24,7 @@ modules:
   # ── Knowledge Graph Engine ────────────────────────────────────────────
   - name: knowledge_graph_engine
     package: knowledge_graph_engine
+    invoker_class_name: KnowledgeGraphEngine
     transport: graphql
     config_class: "knowledge_graph_engine.handlers.config:Config"
     config_init_style: dict
@@ -48,8 +49,25 @@ modules:
         auth: true
 
   # ── RFQ Engine ───────────────────────────────────────────────────────
+  # AI Marketing Engine
+  - name: ai_marketing_engine
+    package: ai_marketing_engine
+    invoker_class_name: AIMarketingEngine
+    transport: graphql
+    config_class: "ai_marketing_engine.handlers.config:Config"
+    config_init_style: kwargs
+    config_overrides:
+      pg_table_prefix: "{setting:ame_pg_table_prefix}"
+    routes:
+      - path: "/{endpoint_id}/ai_marketing_graphql"
+        handler_type: graphql
+        dispatch: "ai_marketing_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+
   - name: rfq_engine
     package: rfq_engine
+    invoker_class_name: RFQEngine
     transport: graphql
     config_class: "rfq_engine.handlers.config:Config"
     config_init_style: dict
@@ -65,6 +83,7 @@ modules:
   # ── MCP Daemon Engine ────────────────────────────────────────────────
   - name: mcp_daemon_engine
     package: mcp_daemon_engine
+    invoker_class_name: MCPDaemonEngine
     transport: hybrid
     config_class: "mcp_daemon_engine.handlers.config:Config"
     config_init_style: dict
@@ -185,6 +204,7 @@ modules:
   # ── AI Coordination Engine ──────────────────────────────────────────
   - name: ai_coordination_engine
     package: ai_coordination_engine
+    invoker_class_name: AICoordinationEngine
     transport: graphql
     config_class: "ai_coordination_engine.handlers.config:Config"
     config_init_style: kwargs
@@ -200,6 +220,7 @@ modules:
   # ── AI Agent Core Engine ────────────────────────────────────────────
   - name: ai_agent_core_engine
     package: ai_agent_core_engine
+    invoker_class_name: AIAgentCoreEngine
     transport: hybrid
     config_class: "ai_agent_core_engine.handlers.config:Config"
     config_init_style: dict
