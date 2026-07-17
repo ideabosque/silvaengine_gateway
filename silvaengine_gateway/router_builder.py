@@ -84,6 +84,8 @@ class ModuleSpec(BaseModel):
     transport: str = "graphql"  # "graphql" | "rest" | "hybrid"
     routes: List[RouteSpec] = Field(default_factory=list)
     config: Dict[str, Any] = Field(default_factory=dict)
+    invoker_class_name: Optional[str] = None
+    # Concrete class name used in generated functs_on_local entries.
 
     # Module Config auto-initialization
     config_class: Optional[str] = None

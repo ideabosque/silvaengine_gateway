@@ -176,6 +176,9 @@ settings:
   rfq_pg_table_prefix:
     env: RFQ_PG_TABLE_PREFIX
     default: rfq_
+  ame_pg_table_prefix:
+    env: AME_PG_TABLE_PREFIX
+    default: ame_
   ace_pg_table_prefix:
     env: ACE_PG_TABLE_PREFIX
     default: ace_

@@ -36,17 +36,6 @@ from .router_builder import ModuleSpec
 
 logger = logging.getLogger(__name__)
 
-# Concrete Invoker class names per package. Used when a module does not set
-# FUNCTS_<NAME>_CLASS and its config_class does not imply a usable name.
-_DEFAULT_INVOKER_CLASS_NAMES = {
-    "ai_agent_core_engine": "AIAgentCoreEngine",
-    "ai_coordination_engine": "AICoordinationEngine",
-    "rfq_engine": "RFQEngine",
-    "knowledge_graph_engine": "KnowledgeGraphEngine",
-    "mcp_daemon_engine": "MCPDaemonEngine",
-}
-
-
 # ---------------------------------------------------------------------------
 # functs_on_local helpers
 # ---------------------------------------------------------------------------
@@ -58,9 +47,8 @@ def _module_invoker_class_name(module: ModuleSpec) -> str:
     if configured:
         return configured
 
-    default_name = _DEFAULT_INVOKER_CLASS_NAMES.get(module.package)
-    if default_name:
-        return default_name
+    if module.invoker_class_name:
+        return module.invoker_class_name
 
     if module.config_class:
         config_name = module.config_class.rsplit(":", 1)[-1].rsplit(".", 1)[-1]

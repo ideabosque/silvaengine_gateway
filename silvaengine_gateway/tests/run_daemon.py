@@ -38,6 +38,7 @@ _SIBLING_ROOTS = [
     for name in (
         "knowledge_graph_engine",
         "rfq_engine",
+        "ai_marketing_engine",
         "mcp_daemon_engine",
         "ai_agent_core_engine",
         "ai_agent_handler",
