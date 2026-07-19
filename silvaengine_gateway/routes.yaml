@@ -277,3 +277,10 @@ modules:
         dispatch: "a2a_daemon_engine.main:dispatch_sse_message"
         methods: ["POST"]
         auth: true
+
+      # REST — A2A Agent Card discovery (public, no auth)
+      - path: "/{endpoint_id}/.well-known/agent-card.json"
+        handler_type: rest
+        dispatch: "a2a_daemon_engine.main:dispatch_agent_card"
+        methods: ["GET"]
+        auth: false
