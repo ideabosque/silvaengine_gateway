@@ -33,12 +33,6 @@ settings:
   aws_secret_access_key:
     env: aws_secret_access_key
 
-  # ── Tenant ────────────────────────────────────────────────────────────
-  endpoint_id:
-    env: endpoint_id
-  part_id:
-    env: part_id
-
   # ── Auth (gateway-specific) ───────────────────────────────────────────
   auth_provider:
     env: [GATEWAY_AUTH_PROVIDER, AUTH_PROVIDER]
