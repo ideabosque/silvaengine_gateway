@@ -1,0 +1,16 @@
+# Client Engine — module manifest fragment
+# Included by routes.yaml via `!include routes/client_engine.yaml`
+
+name: client_engine
+package: client_engine
+transport: graphql
+config_class: "client_engine.handlers.config:Config"
+config_init_style: kwargs
+config_overrides:
+  pg_table_prefix: "{setting:ce_pg_table_prefix}"
+routes:
+  - path: "/{endpoint_id}/client_graphql"
+    handler_type: graphql
+    dispatch: "client_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

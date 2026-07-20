@@ -46,7 +46,7 @@ silvaengine-gateway = "silvaengine_gateway.__main__:main"
 include = ["silvaengine_gateway*"]
 
 [tool.setuptools.package-data]
-silvaengine_gateway = ["routes.yaml", "settings.yaml"]
+silvaengine_gateway = ["routes.yaml", "settings.yaml", "routes/*.yaml"]
 
 [tool.pytest.ini_options]
 markers = [

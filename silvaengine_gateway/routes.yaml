@@ -1,10 +1,10 @@
-# SilvaEngine Gateway — Route Manifest
+# SilvaEngine Gateway — Route Manifest (master)
 #
 # Each module points its dispatch routes at a core dispatch function
 # (e.g. "package.module:dispatch_graphql"). The gateway resolves it
 # via importlib and wraps it with the appropriate handler factory.
 #
-# handler_type: graphql | rest | background | task_status | sse
+# handler_type: graphql | rest | background | task_status | sse | websocket
 # dispatch: "package.module:function_name"
 #
 # Paths carry only {endpoint_id}; the tenant partition id is supplied by the
@@ -19,268 +19,38 @@
 # exception_handlers:
 #   - exception_class: "package.module:ExceptionClass"
 #     status_code: 401
+#
+# Splitting modules across child files:
+# Each entry below pulls in a per-module fragment from routes/<module>.yaml.
+# Child paths are relative to this file. A child may contain either a single
+# module map (most common) or a YAML list of module maps (for grouping).
+# Add a new module by creating routes/<module>.yaml and adding a !include
+# line here.
 
 modules:
   # ── Knowledge Graph Engine ────────────────────────────────────────────
-  - name: knowledge_graph_engine
-    package: knowledge_graph_engine
-    invoker_class_name: KnowledgeGraphEngine
-    transport: graphql
-    config_class: "knowledge_graph_engine.handlers.config:Config"
-    config_init_style: dict
-    config_overrides:
-      pg_table_prefix: "{setting:kge_pg_table_prefix}"
-    routes:
-      - path: "/{endpoint_id}/knowledge_graph_graphql"
-        handler_type: graphql
-        dispatch: "knowledge_graph_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
+  - !include routes/knowledge_graph_engine.yaml
 
-      - path: "/{endpoint_id}/extract"
-        handler_type: background
-        dispatch: "knowledge_graph_engine.main:dispatch_extract"
-        methods: ["POST"]
-        auth: true
+  # ── AI Marketing Engine ───────────────────────────────────────────────
+  - !include routes/ai_marketing_engine.yaml
 
-      - path: "/{endpoint_id}/extract/status/{task_id}"
-        handler_type: task_status
-        methods: ["GET"]
-        auth: true
-
-  # ── RFQ Engine ───────────────────────────────────────────────────────
-  # AI Marketing Engine
-  - name: ai_marketing_engine
-    package: ai_marketing_engine
-    invoker_class_name: AIMarketingEngine
-    transport: graphql
-    config_class: "ai_marketing_engine.handlers.config:Config"
-    config_init_style: kwargs
-    config_overrides:
-      pg_table_prefix: "{setting:ame_pg_table_prefix}"
-    routes:
-      - path: "/{endpoint_id}/ai_marketing_graphql"
-        handler_type: graphql
-        dispatch: "ai_marketing_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
-
-  - name: rfq_engine
-    package: rfq_engine
-    invoker_class_name: RFQEngine
-    transport: graphql
-    config_class: "rfq_engine.handlers.config:Config"
-    config_init_style: dict
-    config_overrides:
-      pg_table_prefix: "{setting:rfq_pg_table_prefix}"
-    routes:
-      - path: "/{endpoint_id}/rfq_graphql"
-        handler_type: graphql
-        dispatch: "rfq_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
+  # ── RFQ Engine ────────────────────────────────────────────────────────
+  - !include routes/rfq_engine.yaml
 
   # ── MCP Daemon Engine ────────────────────────────────────────────────
-  - name: mcp_daemon_engine
-    package: mcp_daemon_engine
-    invoker_class_name: MCPDaemonEngine
-    transport: hybrid
-    config_class: "mcp_daemon_engine.handlers.config:Config"
-    config_init_style: dict
-    config_exclude_keys:
-      - host
-      - workers
-      - routes_config_path
-      - task_backend
-      - task_table
-      - task_ttl
-      - rate_limit_backend
-      - rate_limit_table
-    on_shutdown: "mcp_daemon_engine.handlers.sse_manager:cleanup_sse"
-    sse_manager: "mcp_daemon_engine.handlers.sse_manager:sse_manager"
-    exception_handlers:
-      - exception_class: "mcp_daemon_engine.utils.exceptions:AuthenticationError"
-        status_code: 401
-      - exception_class: "mcp_daemon_engine.utils.exceptions:TokenExpiredError"
-        status_code: 401
-      - exception_class: "mcp_daemon_engine.utils.exceptions:InvalidRequestError"
-        status_code: 400
-      - exception_class: "mcp_daemon_engine.utils.exceptions:RateLimitExceeded"
-        status_code: 429
-      - exception_class: "mcp_daemon_engine.utils.exceptions:MCPDaemonError"
-        status_code: 500
-    routes:
-      # GraphQL — MCP daemon queries/mutations
-      - path: "/{endpoint_id}/mcp_daemon_graphql"
-        handler_type: graphql
-        dispatch: "mcp_daemon_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
-
-      # REST — MCP JSON-RPC (no SSE broadcast)
-      - path: "/{endpoint_id}/mcp"
-        handler_type: rest
-        dispatch: "mcp_daemon_engine.main:dispatch_mcp"
-        methods: ["POST"]
-        auth: true
-
-      # SSE stream (GET) — long-lived SSE connection
-      - path: "/{endpoint_id}/sse"
-        handler_type: sse
-        methods: ["GET"]
-        auth: true
-
-      # SSE POST — JSON-RPC message + SSE push to connected clients
-      - path: "/{endpoint_id}/sse"
-        handler_type: rest
-        dispatch: "mcp_daemon_engine.main:dispatch_sse_message"
-        methods: ["POST"]
-        auth: true
-
-      # Background — async tool execution
-      - path: "/{endpoint_id}/mcp_async_execute"
-        handler_type: background
-        dispatch: "mcp_daemon_engine.main:dispatch_mcp_async"
-        methods: ["POST"]
-        auth: true
-
-      # Task status
-      - path: "/{endpoint_id}/mcp_async/status/{task_id}"
-        handler_type: task_status
-        methods: ["GET"]
-        auth: true
-
-      # Admin — cache refresh
-      - path: "/{endpoint_id}/admin/cache/refresh"
-        handler_type: rest
-        dispatch: "mcp_daemon_engine.main:dispatch_cache_refresh"
-        methods: ["POST"]
-        auth: true
-
-      # Admin — cache clear (specific partition)
-      - path: "/{endpoint_id}/admin/cache"
-        handler_type: rest
-        dispatch: "mcp_daemon_engine.main:dispatch_cache_clear"
-        methods: ["DELETE"]
-        auth: true
-
-      # Endpoint info
-      - path: "/{endpoint_id}/mcp_info"
-        handler_type: rest
-        dispatch: "mcp_daemon_engine.main:dispatch_mcp_info"
-        methods: ["GET"]
-        auth: true
+  - !include routes/mcp_daemon_engine.yaml
 
   # ── Client Engine ────────────────────────────────────────────────────
-  - name: client_engine
-    package: client_engine
-    transport: graphql
-    config_class: "client_engine.handlers.config:Config"
-    config_init_style: kwargs
-    config_overrides:
-      pg_table_prefix: "{setting:ce_pg_table_prefix}"
-    routes:
-      - path: "/{endpoint_id}/client_graphql"
-        handler_type: graphql
-        dispatch: "client_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
+  - !include routes/client_engine.yaml
 
-  # ── Setting Core Engine ─────────────────────────────────────────────
-  - name: setting_core_engine
-    package: setting_core_engine
-    transport: graphql
-    config_class: "setting_core_engine.handlers.config:Config"
-    config_init_style: kwargs
-    config_overrides:
-      pg_table_prefix: "{setting:sce_pg_table_prefix}"
-    routes:
-      - path: "/{endpoint_id}/setting_core_graphql"
-        handler_type: graphql
-        dispatch: "setting_core_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
+  # ── Setting Core Engine ──────────────────────────────────────────────
+  - !include routes/setting_core_engine.yaml
 
-  # ── AI Coordination Engine ──────────────────────────────────────────
-  - name: ai_coordination_engine
-    package: ai_coordination_engine
-    invoker_class_name: AICoordinationEngine
-    transport: graphql
-    config_class: "ai_coordination_engine.handlers.config:Config"
-    config_init_style: kwargs
-    config_overrides:
-      pg_table_prefix: "{setting:ace_pg_table_prefix}"
-    routes:
-      - path: "/{endpoint_id}/ai_coordination_graphql"
-        handler_type: graphql
-        dispatch: "ai_coordination_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
+  # ── AI Coordination Engine ───────────────────────────────────────────
+  - !include routes/ai_coordination_engine.yaml
 
-  # ── AI Agent Core Engine ────────────────────────────────────────────
-  - name: ai_agent_core_engine
-    package: ai_agent_core_engine
-    invoker_class_name: AIAgentCoreEngine
-    transport: hybrid
-    config_class: "ai_agent_core_engine.handlers.config:Config"
-    config_init_style: dict
-    config_overrides:
-      pg_table_prefix: "{setting:aace_pg_table_prefix}"
-    routes:
-      # GraphQL — AI agent queries/mutations (HTTP)
-      - path: "/{endpoint_id}/ai_agent_core_graphql"
-        handler_type: graphql
-        dispatch: "ai_agent_core_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
+  # ── AI Agent Core Engine ─────────────────────────────────────────────
+  - !include routes/ai_agent_core_engine.yaml
 
-      # WebSocket — streaming AI agent responses
-      - path: "/{endpoint_id}/ai_agent_core_ws"
-        handler_type: websocket
-        dispatch: "ai_agent_core_engine.main:dispatch_ask_model"
-        # A "ping" message runs the module's GraphQL `{ ping }` end-to-end.
-        ping_dispatch: "ai_agent_core_engine.main:dispatch_graphql"
-        auth: true
-
-  # ── A2A Daemon Engine ───────────────────────────────────────────────
-  - name: a2a_daemon_engine
-    package: a2a_daemon_engine
-    transport: hybrid
-    config_class: "a2a_daemon_engine.handlers.config:Config"
-    config_init_style: kwargs
-    on_shutdown: "a2a_daemon_engine.handlers.sse_manager:cleanup_sse"
-    sse_manager: "a2a_daemon_engine.handlers.sse_manager:sse_manager"
-    routes:
-      # GraphQL — A2A core queries/mutations (agents, tasks, messages, settings)
-      - path: "/{endpoint_id}/a2a_core_graphql"
-        handler_type: graphql
-        dispatch: "a2a_daemon_engine.main:dispatch_graphql"
-        methods: ["POST"]
-        auth: true
-
-      # REST — A2A JSON-RPC 2.0 protocol handler (message/send, tasks/get, tasks/cancel)
-      - path: "/{endpoint_id}/a2a"
-        handler_type: rest
-        dispatch: "a2a_daemon_engine.main:dispatch_a2a"
-        methods: ["POST"]
-        auth: true
-
-      # SSE stream (GET) — long-lived per-partition A2A task event stream
-      - path: "/{endpoint_id}/a2a_sse"
-        handler_type: sse
-        methods: ["GET"]
-        auth: true
-
-      # SSE POST — A2A JSON-RPC message + SSE push to connected clients
-      - path: "/{endpoint_id}/a2a_sse"
-        handler_type: rest
-        dispatch: "a2a_daemon_engine.main:dispatch_sse_message"
-        methods: ["POST"]
-        auth: true
-
-      # REST — A2A Agent Card discovery (public, no auth)
-      - path: "/{endpoint_id}/.well-known/agent-card.json"
-        handler_type: rest
-        dispatch: "a2a_daemon_engine.main:dispatch_agent_card"
-        methods: ["GET"]
-        auth: false
+  # ── A2A Daemon Engine ────────────────────────────────────────────────
+  - !include routes/a2a_daemon_engine.yaml

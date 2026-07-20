@@ -1,0 +1,17 @@
+# AI Marketing Engine — module manifest fragment
+# Included by routes.yaml via `!include routes/ai_marketing_engine.yaml`
+
+name: ai_marketing_engine
+package: ai_marketing_engine
+invoker_class_name: AIMarketingEngine
+transport: graphql
+config_class: "ai_marketing_engine.handlers.config:Config"
+config_init_style: kwargs
+config_overrides:
+  pg_table_prefix: "{setting:ame_pg_table_prefix}"
+routes:
+  - path: "/{endpoint_id}/ai_marketing_graphql"
+    handler_type: graphql
+    dispatch: "ai_marketing_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
