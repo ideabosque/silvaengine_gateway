@@ -1,0 +1,26 @@
+# AI Agent Core Engine — module manifest fragment
+# Included by routes.yaml via `!include routes/ai_agent_core_engine.yaml`
+
+name: ai_agent_core_engine
+package: ai_agent_core_engine
+invoker_class_name: AIAgentCoreEngine
+transport: hybrid
+config_class: "ai_agent_core_engine.handlers.config:Config"
+config_init_style: dict
+config_overrides:
+  pg_table_prefix: "{setting:aace_pg_table_prefix}"
+routes:
+  # GraphQL — AI agent queries/mutations (HTTP)
+  - path: "/{endpoint_id}/ai_agent_core_graphql"
+    handler_type: graphql
+    dispatch: "ai_agent_core_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
+
+  # WebSocket — streaming AI agent responses
+  - path: "/{endpoint_id}/ai_agent_core_ws"
+    handler_type: websocket
+    dispatch: "ai_agent_core_engine.main:dispatch_ask_model"
+    # A "ping" message runs the module's GraphQL `{ ping }` end-to-end.
+    ping_dispatch: "ai_agent_core_engine.main:dispatch_graphql"
+    auth: true
