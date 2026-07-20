@@ -21,36 +21,36 @@
 #     status_code: 401
 #
 # Splitting modules across child files:
-# Each entry below pulls in a per-module fragment from routes/<module>.yaml.
+# Each entry below pulls in a per-module fragment from module_routes/<module>.yaml.
 # Child paths are relative to this file. A child may contain either a single
 # module map (most common) or a YAML list of module maps (for grouping).
-# Add a new module by creating routes/<module>.yaml and adding a !include
-# line here.
+# Add a new module by creating module_routes/<module>.yaml and adding a
+# !include line here.
 
 modules:
   # ── Knowledge Graph Engine ────────────────────────────────────────────
-  - !include routes/knowledge_graph_engine.yaml
+  - !include module_routes/knowledge_graph_engine.yaml
 
   # ── AI Marketing Engine ───────────────────────────────────────────────
-  - !include routes/ai_marketing_engine.yaml
+  - !include module_routes/ai_marketing_engine.yaml
 
   # ── RFQ Engine ────────────────────────────────────────────────────────
-  - !include routes/rfq_engine.yaml
+  - !include module_routes/rfq_engine.yaml
 
   # ── MCP Daemon Engine ────────────────────────────────────────────────
-  - !include routes/mcp_daemon_engine.yaml
+  - !include module_routes/mcp_daemon_engine.yaml
 
   # ── Client Engine ────────────────────────────────────────────────────
-  - !include routes/client_engine.yaml
+  - !include module_routes/client_engine.yaml
 
   # ── Setting Core Engine ──────────────────────────────────────────────
-  - !include routes/setting_core_engine.yaml
+  - !include module_routes/setting_core_engine.yaml
 
   # ── AI Coordination Engine ───────────────────────────────────────────
-  - !include routes/ai_coordination_engine.yaml
+  - !include module_routes/ai_coordination_engine.yaml
 
   # ── AI Agent Core Engine ─────────────────────────────────────────────
-  - !include routes/ai_agent_core_engine.yaml
+  - !include module_routes/ai_agent_core_engine.yaml
 
   # ── A2A Daemon Engine ────────────────────────────────────────────────
-  - !include routes/a2a_daemon_engine.yaml
+  - !include module_routes/a2a_daemon_engine.yaml
