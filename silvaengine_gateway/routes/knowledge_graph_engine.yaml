@@ -1,0 +1,28 @@
+# Knowledge Graph Engine — module manifest fragment
+# Included by routes.yaml via `!include routes/knowledge_graph_engine.yaml`
+
+name: knowledge_graph_engine
+package: knowledge_graph_engine
+invoker_class_name: KnowledgeGraphEngine
+transport: graphql
+config_class: "knowledge_graph_engine.handlers.config:Config"
+config_init_style: dict
+config_overrides:
+  pg_table_prefix: "{setting:kge_pg_table_prefix}"
+routes:
+  - path: "/{endpoint_id}/knowledge_graph_graphql"
+    handler_type: graphql
+    dispatch: "knowledge_graph_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
+
+  - path: "/{endpoint_id}/extract"
+    handler_type: background
+    dispatch: "knowledge_graph_engine.main:dispatch_extract"
+    methods: ["POST"]
+    auth: true
+
+  - path: "/{endpoint_id}/extract/status/{task_id}"
+    handler_type: task_status
+    methods: ["GET"]
+    auth: true

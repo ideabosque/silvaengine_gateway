@@ -1,0 +1,17 @@
+# RFQ Engine — module manifest fragment
+# Included by routes.yaml via `!include routes/rfq_engine.yaml`
+
+name: rfq_engine
+package: rfq_engine
+invoker_class_name: RFQEngine
+transport: graphql
+config_class: "rfq_engine.handlers.config:Config"
+config_init_style: dict
+config_overrides:
+  pg_table_prefix: "{setting:rfq_pg_table_prefix}"
+routes:
+  - path: "/{endpoint_id}/rfq_graphql"
+    handler_type: graphql
+    dispatch: "rfq_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

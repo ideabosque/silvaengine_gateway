@@ -1,0 +1,17 @@
+# AI Coordination Engine — module manifest fragment
+# Included by routes.yaml via `!include routes/ai_coordination_engine.yaml`
+
+name: ai_coordination_engine
+package: ai_coordination_engine
+invoker_class_name: AICoordinationEngine
+transport: graphql
+config_class: "ai_coordination_engine.handlers.config:Config"
+config_init_style: kwargs
+config_overrides:
+  pg_table_prefix: "{setting:ace_pg_table_prefix}"
+routes:
+  - path: "/{endpoint_id}/ai_coordination_graphql"
+    handler_type: graphql
+    dispatch: "ai_coordination_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

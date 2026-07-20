@@ -1,0 +1,16 @@
+# Setting Core Engine — module manifest fragment
+# Included by routes.yaml via `!include routes/setting_core_engine.yaml`
+
+name: setting_core_engine
+package: setting_core_engine
+transport: graphql
+config_class: "setting_core_engine.handlers.config:Config"
+config_init_style: kwargs
+config_overrides:
+  pg_table_prefix: "{setting:sce_pg_table_prefix}"
+routes:
+  - path: "/{endpoint_id}/setting_core_graphql"
+    handler_type: graphql
+    dispatch: "setting_core_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
