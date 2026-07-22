@@ -49,6 +49,9 @@ modules:
   # ── Setting Engine (Banyanos) ─────────────────────────────────────────
   - !include module_routes/setting_engine.yaml
 
+  # ── LLM Engine (Banyanos) ─────────────────────────────────────────────
+  - !include module_routes/llm_engine.yaml
+
   # ── AI Coordination Engine ───────────────────────────────────────────
   - !include module_routes/ai_coordination_engine.yaml
 

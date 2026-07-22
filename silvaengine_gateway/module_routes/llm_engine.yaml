@@ -1,0 +1,14 @@
+# LLM Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/llm_engine.yaml`
+
+name: llm_engine
+package: llm_engine
+transport: graphql
+config_class: "llm_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/llm_engine_graphql"
+    handler_type: graphql
+    dispatch: "llm_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
