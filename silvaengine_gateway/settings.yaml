@@ -234,6 +234,20 @@ settings:
     env: HERMES_STREAM_TIMEOUT
     default: "300"
 
+  # ── OpenClaw Gateway bridge (forwarded to a2a_daemon_engine Config) ───
+  OPENCLAW_API_URL:
+    env: OPENCLAW_API_URL
+  OPENCLAW_API_KEY:
+    env: OPENCLAW_API_KEY
+  OPENCLAW_AGENT_ID:
+    env: OPENCLAW_AGENT_ID
+  OPENCLAW_AGENT_SELECTOR:
+    env: OPENCLAW_AGENT_SELECTOR
+    default: model
+  OPENCLAW_STREAM_TIMEOUT:
+    env: OPENCLAW_STREAM_TIMEOUT
+    default: "300"
+
   # ── A2A bridge — handler resolution via env vars ──────────────────────
   A2A_AI_AGENT_MODULE:
     env: A2A_AI_AGENT_MODULE
