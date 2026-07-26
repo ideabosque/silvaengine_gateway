@@ -1,0 +1,14 @@
+# Setting Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/setting_engine.yaml`
+
+name: setting_engine
+package: setting_engine
+transport: graphql
+config_class: "setting_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/setting_engine_graphql"
+    handler_type: graphql
+    dispatch: "setting_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
