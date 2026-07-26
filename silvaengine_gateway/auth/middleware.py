@@ -18,9 +18,15 @@ from .jwt_local import verify_local_jwt
 
 
 class FlexJWTMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, public_paths: Iterable[str] = ()):
+    def __init__(self, app, public_paths: Iterable[str] = (),
+                 public_suffixes: Iterable[str] = ()):
         super().__init__(app)
         self.public_paths: List[str] = list(public_paths) + ["/auth"]
+        # Path suffixes that are public regardless of the leading endpoint_id
+        # segment — e.g. the A2A Agent Card discovery endpoint
+        # "/{endpoint_id}/.well-known/agent-card.json", which the A2A spec
+        # requires to be reachable without authentication.
+        self.public_suffixes: List[str] = list(public_suffixes)
 
     def _is_public(self, path: str) -> bool:
         """Match a public path on segment boundaries.
@@ -32,6 +38,9 @@ class FlexJWTMiddleware(BaseHTTPMiddleware):
         """
         for p in self.public_paths:
             if path == p or path.startswith(p + "/"):
+                return True
+        for suffix in self.public_suffixes:
+            if path.endswith(suffix):
                 return True
         return False
 

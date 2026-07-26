@@ -1,0 +1,14 @@
+# Monitor Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/monitor_engine.yaml`
+
+name: monitor_engine
+package: monitor_engine
+transport: graphql
+config_class: "monitor_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/monitor_engine_graphql"
+    handler_type: graphql
+    dispatch: "monitor_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

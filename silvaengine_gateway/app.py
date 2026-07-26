@@ -336,10 +336,19 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
         store=rate_limit_store,
     )
 
-    # Auth middleware
+    # Auth middleware.
+    # Public paths: /health, /auth, plus the A2A Agent Card discovery endpoint
+    # (/{endpoint_id}/.well-known/agent-card.json), which the A2A spec requires
+    # to be reachable WITHOUT authentication so clients can discover agents.
+    # The middleware matches public paths by exact/segment prefix; the agent
+    # card path is matched by suffix below.
     from .auth.middleware import FlexJWTMiddleware
 
-    app.add_middleware(FlexJWTMiddleware, public_paths=["/health", "/auth"])
+    app.add_middleware(
+        FlexJWTMiddleware,
+        public_paths=["/health", "/auth"],
+        public_suffixes=["/.well-known/agent-card.json"],
+    )
 
     # CORS — added LAST so it is the OUTERMOST middleware (see note above).
     from fastapi.middleware.cors import CORSMiddleware

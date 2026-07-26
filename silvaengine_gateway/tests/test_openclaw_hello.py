@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Minimal E2E: say hello from Hermes through A2A via the SilvaEngine Gateway.
+Minimal E2E: say hello from OpenClaw through A2A via the SilvaEngine Gateway.
 
-    Client -> Gateway (8765) -> A2A daemon -> Phase 10 bridge -> Hermes API (8642) -> reply
+    Client -> Gateway (8765) -> A2A daemon -> Phase 10 bridge -> OpenClaw Gateway (18789) -> reply
 
 Reads gateway tests/.env, generates a local JWT, sends message/send with a
 short prompt, and prints the agent's reply text.
+
+Prerequisites:
+    - OpenClaw Gateway running on http://127.0.0.1:18789
+      (gateway.http.endpoints.chatCompletions.enabled = true)
+    - SilvaEngine Gateway running on http://127.0.0.1:8765
+    - Gateway .env at silvaengine_gateway/silvaengine_gateway/tests/.env
+    - PostgreSQL running with openclaw-agent registered
 
 Author: bibow
 """
@@ -24,7 +31,7 @@ __author__ = "bibow"
 
 GATEWAY_TESTS_DIR = Path(__file__).resolve().parent
 GATEWAY_ENV_FILE = GATEWAY_TESTS_DIR / ".env"
-HERMES_AGENT_ID = "hermes-agent"
+OPENCLAW_AGENT_ID = "openclaw-agent"
 
 
 def load_env():
@@ -56,7 +63,7 @@ def generate_token(env):
         from jose import jwt
         import pendulum
         return jwt.encode(
-            {"sub": "hermes-hello", "username": "hermes-hello", "role": "admin",
+            {"sub": "openclaw-hello", "username": "openclaw-hello", "role": "admin",
              "iat": pendulum.now("UTC"), "perm": True},
             jwt_secret, algorithm=jwt_algo,
         )
@@ -65,13 +72,13 @@ def generate_token(env):
         from silvaengine_gateway.auth.jwt_local import create_local_jwt
         from silvaengine_gateway.config import GatewayConfig
         import logging
-        GatewayConfig.initialize(logging.getLogger("hermes-hello"), {
+        GatewayConfig.initialize(logging.getLogger("openclaw-hello"), {
             "jwt_secret_key": jwt_secret,
             "jwt_algorithm": jwt_algo,
             "access_token_exp": 15,
             "admin_static_token": "",
         })
-        return create_local_jwt({"username": "hermes-hello", "role": "admin"}, forever=True)
+        return create_local_jwt({"username": "openclaw-hello", "role": "admin"}, forever=True)
 
 
 def main():
@@ -92,17 +99,17 @@ def main():
         print(f"[FAIL] gateway /health error: {e}")
         return 1
 
-    hermes_url = env.get("HERMES_API_URL", "http://127.0.0.1:8642")
-    hermes_key = env.get("HERMES_API_KEY", "hermes-local-key")
+    openclaw_url = env.get("OPENCLAW_API_URL", "http://127.0.0.1:18789")
+    openclaw_key = env.get("OPENCLAW_API_KEY", "")
     try:
-        r = requests.get(f"{hermes_url}/health",
-                         headers={"Authorization": f"Bearer {hermes_key}"}, timeout=15)
-        print(f"[INFO] hermes /health -> {r.status_code}")
+        r = requests.get(f"{openclaw_url}/v1/models",
+                         headers={"Authorization": f"Bearer {openclaw_key}"}, timeout=15)
+        print(f"[INFO] openclaw /v1/models -> {r.status_code}")
     except Exception as e:
-        print(f"[WARN] hermes /health error: {e}")
+        print(f"[WARN] openclaw /v1/models error: {e}")
 
     # message/send through gateway
-    task_id = f"hermes-hello-{uuid.uuid4().hex[:8]}"
+    task_id = f"openclaw-hello-{uuid.uuid4().hex[:8]}"
     prompt = "Say hello and introduce yourself in one short sentence."
     body = {
         "jsonrpc": "2.0",
@@ -114,11 +121,11 @@ def main():
             },
             "metadata": {
                 "operation": "task_execution",
-                "agent_uuid": HERMES_AGENT_ID,
-                "task_data": {"task_id": task_id, "task_type": "hermes_hello"},
+                "agent_uuid": OPENCLAW_AGENT_ID,
+                "task_data": {"task_id": task_id, "task_type": "openclaw_hello"},
             },
         },
-        "id": "hermes-hello-001",
+        "id": "openclaw-hello-001",
     }
 
     print(f"[INFO] sending message/send (task_id={task_id})")
@@ -173,7 +180,7 @@ def main():
         print("[FAIL] no reply text extracted")
         return 4
 
-    print(f"[PASS] Hermes reply: {reply_text}")
+    print(f"[PASS] OpenClaw reply: {reply_text}")
     return 0
 
 
