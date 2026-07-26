@@ -1,0 +1,14 @@
+# User Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/user_engine.yaml`
+
+name: user_engine
+package: user_engine
+transport: graphql
+config_class: "user_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/user_engine_graphql"
+    handler_type: graphql
+    dispatch: "user_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

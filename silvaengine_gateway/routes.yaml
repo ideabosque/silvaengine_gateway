@@ -52,6 +52,12 @@ modules:
   # ── LLM Engine (Banyanos) ─────────────────────────────────────────────
   - !include module_routes/llm_engine.yaml
 
+  # ── User Engine (Banyanos) ──────────────────────────────────────────────
+  - !include module_routes/user_engine.yaml
+
+  # ── Monitor Engine (Banyanos) ───────────────────────────────────────────
+  - !include module_routes/monitor_engine.yaml
+
   # ── AI Coordination Engine ───────────────────────────────────────────
   - !include module_routes/ai_coordination_engine.yaml
 
