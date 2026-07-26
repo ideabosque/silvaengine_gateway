@@ -33,21 +33,52 @@ from pathlib import Path
 # namespace-package shadow of the project directory.
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 _MONOREPO = Path(__file__).resolve().parent.parent.parent.parent
-_SIBLING_ROOTS = [
-    str(_MONOREPO / name)
-    for name in (
-        "knowledge_graph_engine",
-        "rfq_engine",
-        "ai_marketing_engine",
-        "mcp_daemon_engine",
-        "ai_agent_core_engine",
-        "ai_agent_handler",
-        "ai_coordination_engine",
-        "client_engine",
-        "setting_core_engine",
-        "a2a_daemon_engine",
-    )
-]
+
+
+def _discover_module_roots():
+    """Scan module_routes/*.yaml for ``package:`` names and resolve their
+    project directories on disk.
+
+    Searches every sibling repo under the parent of the silvaengine monorepo
+    (e.g. ``gitrepo/silvaengine/<pkg>``, ``gitrepo/banyanos/<pkg>``, …) so new
+    repos are picked up automatically.  Only directories that exist are added,
+    so missing modules are silently skipped.  This is fully data-driven —
+    adding a new module_routes/<name>.yaml is enough; no edit to this file
+    is needed.
+    """
+    import re
+
+    _MODULE_ROUTES_DIR = Path(__file__).resolve().parent.parent / "module_routes"
+    _REPOS_DIR = _MONOREPO.parent  # e.g. gitrepo/ — contains silvaengine, banyanos, …
+    roots = []
+
+    if not _MODULE_ROUTES_DIR.is_dir():
+        return roots
+
+    # Collect all sibling repo directories (silvaengine, banyanos, future repos).
+    search_roots = [
+        child for child in sorted(_REPOS_DIR.iterdir())
+        if child.is_dir()
+    ]
+
+    for yaml_file in sorted(_MODULE_ROUTES_DIR.glob("*.yaml")):
+        text = yaml_file.read_text(encoding="utf-8")
+        # Lightweight regex — avoid a full YAML parse because module_routes
+        # files use custom !include tags that require the gateway's loader.
+        m = re.search(r"^package:\s*(\S+)", text, re.MULTILINE)
+        if not m:
+            continue
+        package = m.group(1).strip("\"'")
+        for base in search_roots:
+            candidate = base / package
+            if candidate.is_dir() and str(candidate) not in roots:
+                roots.append(str(candidate))
+                break
+
+    return roots
+
+
+_SIBLING_ROOTS = _discover_module_roots()
 for _p in [_PROJECT_ROOT, *_SIBLING_ROOTS]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
