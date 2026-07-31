@@ -1,0 +1,12 @@
+# Capability Engine (Banyanos) — module manifest fragment
+name: capability_engine
+package: capability_engine
+transport: graphql
+config_class: "capability_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/capability_engine_graphql"
+    handler_type: graphql
+    dispatch: "capability_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

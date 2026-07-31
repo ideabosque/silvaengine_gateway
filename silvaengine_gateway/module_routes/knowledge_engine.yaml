@@ -1,0 +1,14 @@
+# Knowledge Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/knowledge_engine.yaml`
+
+name: knowledge_engine
+package: knowledge_engine
+transport: graphql
+config_class: "knowledge_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/knowledge_engine_graphql"
+    handler_type: graphql
+    dispatch: "knowledge_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
