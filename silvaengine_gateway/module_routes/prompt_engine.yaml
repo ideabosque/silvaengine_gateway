@@ -1,0 +1,14 @@
+# Prompt Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/prompt_engine.yaml`
+
+name: prompt_engine
+package: prompt_engine
+transport: graphql
+config_class: "prompt_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/prompt_engine_graphql"
+    handler_type: graphql
+    dispatch: "prompt_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
