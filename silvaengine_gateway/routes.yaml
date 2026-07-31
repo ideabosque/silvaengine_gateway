@@ -58,6 +58,27 @@ modules:
   # ── Monitor Engine (Banyanos) ───────────────────────────────────────────
   - !include module_routes/monitor_engine.yaml
 
+  # ── Merchant Engine (Banyanos) ───────────────────────────────────────────
+  - !include module_routes/merchant_engine.yaml
+
+  # ── Memory Engine (Banyanos) ─────────────────────────────────────────────
+  - !include module_routes/memory_engine.yaml
+
+  # ── Capability Engine (Banyanos) ───────────────────────────────────────
+  - !include module_routes/capability_engine.yaml
+
+  # ── Knowledge Engine (Banyanos) ────────────────────────────────────────
+  - !include module_routes/knowledge_engine.yaml
+
+  # ── Permission Engine (Banyanos) ───────────────────────────────────────
+  - !include module_routes/perm_engine.yaml
+
+  # ── Agent Engine (Banyanos) ─────────────────────────────────────────────
+  - !include module_routes/agent_engine.yaml
+
+  # ── Prompt Engine (Banyanos) ───────────────────────────────────────────
+  - !include module_routes/prompt_engine.yaml
+
   # ── AI Coordination Engine ───────────────────────────────────────────
   - !include module_routes/ai_coordination_engine.yaml
 
@@ -66,3 +87,6 @@ modules:
 
   # ── A2A Daemon Engine ────────────────────────────────────────────────
   - !include module_routes/a2a_daemon_engine.yaml
+
+  # ── Orchestration Engine (Banyanos) ────────────────────────────────────
+  - !include module_routes/orchestration_engine.yaml

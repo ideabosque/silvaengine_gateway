@@ -1,0 +1,14 @@
+# Agent Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/agent_engine.yaml`
+
+name: agent_engine
+package: agent_engine
+transport: graphql
+config_class: "agent_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/agent_engine_graphql"
+    handler_type: graphql
+    dispatch: "agent_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

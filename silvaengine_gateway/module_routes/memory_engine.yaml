@@ -1,0 +1,14 @@
+# Memory Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/memory_engine.yaml`
+
+name: memory_engine
+package: memory_engine
+transport: graphql
+config_class: "memory_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/memory_engine_graphql"
+    handler_type: graphql
+    dispatch: "memory_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

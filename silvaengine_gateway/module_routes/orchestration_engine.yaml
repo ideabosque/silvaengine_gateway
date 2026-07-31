@@ -1,0 +1,14 @@
+# Orchestration Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/orchestration_engine.yaml`
+
+name: orchestration_engine
+package: orchestration_engine
+transport: graphql
+config_class: "orchestration_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/orchestration_engine_graphql"
+    handler_type: graphql
+    dispatch: "orchestration_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

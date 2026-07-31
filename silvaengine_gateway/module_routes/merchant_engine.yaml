@@ -1,0 +1,14 @@
+# Merchant Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/merchant_engine.yaml`
+
+name: merchant_engine
+package: merchant_engine
+transport: graphql
+config_class: "merchant_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/merchant_engine_graphql"
+    handler_type: graphql
+    dispatch: "merchant_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
