@@ -1,0 +1,23 @@
+# Marketing Engine — module manifest fragment
+# Included by routes.yaml via `!include module_routes/marketing_engine.yaml`
+
+name: marketing_engine
+package: marketing_engine
+invoker_class_name: MarketingEngine
+transport: graphql
+config_class: "marketing_engine.handlers.config:Config"
+config_init_style: kwargs
+config_overrides:
+  pg_table_prefix: "{setting:me_pg_table_prefix}"
+routes:
+  - path: "/{endpoint_id}/marketing_graphql"
+    handler_type: graphql
+    dispatch: "marketing_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
+
+  - path: "/{endpoint_id}/lead"
+    handler_type: rest
+    dispatch: "marketing_engine.main:dispatch_lead"
+    methods: ["POST"]
+    auth: true
