@@ -173,6 +173,9 @@ settings:
   ame_pg_table_prefix:
     env: AME_PG_TABLE_PREFIX
     default: ame_
+  me_db_backend:
+    env: ME_DB_BACKEND
+    default: postgresql
   ace_pg_table_prefix:
     env: ACE_PG_TABLE_PREFIX
     default: ace_
@@ -210,6 +213,14 @@ settings:
     default: memory
   rate_limit_table:
     env: GATEWAY_RATE_LIMIT_TABLE
+  rate_limit:
+    env: GATEWAY_RATE_LIMIT
+    default: "100"
+    type: int
+  rate_limit_window:
+    env: GATEWAY_RATE_WINDOW
+    default: "60"
+    type: int
 
   # ── MCP Daemon Engine (forwarded to mcp_daemon_engine Config) ─────────
   transport:

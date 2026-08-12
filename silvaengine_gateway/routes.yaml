@@ -90,3 +90,6 @@ modules:
 
   # ── Orchestration Engine (Banyanos) ────────────────────────────────────
   - !include module_routes/orchestration_engine.yaml
+
+  # ── Marketing Engine ───────────────────────────────────────────────────
+  - !include module_routes/marketing_engine.yaml
