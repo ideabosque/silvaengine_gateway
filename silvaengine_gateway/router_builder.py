@@ -19,12 +19,14 @@ import asyncio
 import importlib
 import json
 import logging
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 from .tasks.backend import generate_task_id, get_task_backend
@@ -333,6 +335,13 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
         if user:
             params["context"]["user"] = user
 
+        # Forward request headers so a dispatch can read transport-level
+        # metadata that has no place in the payload — an Idempotency-Key is
+        # request identity, not data, and a caller that re-serializes its body
+        # on retry must still be recognized as retrying. Keys are lowercased
+        # because HTTP header names are case-insensitive and clients differ.
+        params["headers"] = {k.lower(): v for k, v in request.headers.items()}
+
         # Execute dispatch in thread pool (sync dispatch functions)
         label = _dispatch_label(params)
         logger.info(
@@ -377,6 +386,22 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
         except (json.JSONDecodeError, TypeError):
             result = response
 
+        # Honour an explicit status code when a dispatch returns the Lambda-proxy
+        # envelope {"statusCode": int, "body": ...}. Without this the envelope's
+        # body was returned with a blanket 200, so a dispatch could not express
+        # 202 Accepted, 404, or 409 — statuses whose whole purpose is to be
+        # machine-readable by the caller.
+        #
+        # Narrow on purpose: it triggers only when both keys are present and
+        # statusCode is an int, so a payload that merely happens to contain a
+        # "body" key (KGE) keeps its current behaviour.
+        if (
+            isinstance(response, dict)
+            and "body" in response
+            and isinstance(response.get("statusCode"), int)
+        ):
+            return JSONResponse(status_code=response["statusCode"], content=result)
+
         return result
 
     return handler
@@ -411,6 +436,8 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
         user = getattr(request.state, "user", None)
         if user:
             params["context"]["user"] = user
+
+        params["headers"] = {k.lower(): v for k, v in request.headers.items()}
 
         task_id = generate_task_id()
         task_backend = get_task_backend()
@@ -626,6 +653,30 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
 # ---------------------------------------------------------------------------
 
 
+async def _wait_for_ws_disconnect(websocket: WebSocket) -> None:
+    """Resolve when the client disconnects the *websocket*.
+
+    Used to watch a WebSocket for a client-initiated close *while* a
+    long-running dispatch (e.g. a streaming model call) is in flight. Without
+    this, the route only notices the disconnect after the dispatch returns —
+    so the model keeps streaming tokens into a socket nobody is reading.
+
+    Stray inbound frames during an in-flight dispatch are ignored: the
+    streaming protocol is request/response, so a second request is not
+    pipelined mid-stream. Only a disconnect resolves this coroutine.
+    """
+    while True:
+        try:
+            msg = await websocket.receive()
+        except WebSocketDisconnect:
+            return
+        except RuntimeError:
+            # Socket already closed from the application side.
+            return
+        if msg.get("type") == "websocket.disconnect":
+            return
+
+
 def _make_websocket_handler(
     dispatch_fn: Optional[Callable],
     connection_manager: Any = None,
@@ -786,13 +837,62 @@ def _make_websocket_handler(
                 params["part_id"] = part_id
                 params["connection_id"] = connection_id
 
-                # Execute dispatch in thread pool (sync dispatch functions)
+                # Execute dispatch in the thread pool (sync dispatch functions)
+                # while concurrently watching for a client disconnect, so a
+                # mid-stream close is noticed immediately instead of only after
+                # the model finishes generating.
+                #
+                # A threading.Event is injected into the context as a
+                # cooperative cancel signal streaming producers can poll
+                # (context["is_cancelled"]()); independently, unregistering the
+                # connection makes ConnectionManager.send_to_connection() return
+                # False, so chunk routing stops on its own even if a producer
+                # ignores the signal. The worker thread itself cannot be killed,
+                # so it unwinds on its own once it stops finding a live socket.
                 loop = asyncio.get_running_loop()
-                try:
-                    result = await loop.run_in_executor(
-                        _executor,
-                        lambda: dispatch_fn(**params),
+                cancel_event = threading.Event()
+                params["context"]["cancel_event"] = cancel_event
+                params["context"]["is_cancelled"] = cancel_event.is_set
+
+                dispatch_future = loop.run_in_executor(
+                    _executor, lambda: dispatch_fn(**params)
+                )
+                disconnect_watch = asyncio.ensure_future(
+                    _wait_for_ws_disconnect(websocket)
+                )
+                done, _pending = await asyncio.wait(
+                    {dispatch_future, disconnect_watch},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if disconnect_watch in done:
+                    # Client went away while the dispatch was still running.
+                    # Signal cooperative cancellation, stop routing chunks, and
+                    # let the (uncancellable) worker thread unwind on its own.
+                    cancel_event.set()
+                    if connection_manager is not None:
+                        connection_manager.unregister(connection_id)
+                    # Consume the orphaned dispatch future's eventual result so
+                    # asyncio doesn't log "exception was never retrieved".
+                    dispatch_future.add_done_callback(
+                        lambda f: f.cancelled() or f.exception()
                     )
+                    logger.info(
+                        "WebSocket client disconnected mid-dispatch; "
+                        "cancelling stream for %s",
+                        connection_id,
+                    )
+                    raise WebSocketDisconnect()
+
+                # Dispatch finished first — stop watching the socket.
+                disconnect_watch.cancel()
+                try:
+                    await disconnect_watch
+                except asyncio.CancelledError:
+                    pass
+
+                try:
+                    result = dispatch_future.result()
                 except Exception as exc:
                     logger.error(
                         "WebSocket dispatch error [%s]: %s",
