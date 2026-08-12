@@ -26,7 +26,8 @@ import time
 from concurrent.futures import Future
 from typing import Any, Dict, List, Optional
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,32 @@ class ConnectionManager:
 
     # ── Send ─────────────────────────────────────────────────────────
 
+    async def _safe_send(
+        self, connection_id: str, websocket: WebSocket, payload: str
+    ) -> None:
+        """Send *payload* on the loop thread, tolerating a mid-stream close.
+
+        Runs via ``run_coroutine_threadsafe`` from :meth:`send_to_connection`.
+        The socket can close between the scheduling-time state check and this
+        coroutine actually running, so re-check here and swallow the resulting
+        close race instead of letting it surface as a loud ERROR. On any close
+        the connection is unregistered so subsequent chunks short-circuit.
+        """
+        if websocket.application_state != WebSocketState.CONNECTED:
+            self.unregister(connection_id)
+            return
+        try:
+            await websocket.send_text(payload)
+        except (RuntimeError, WebSocketDisconnect) as exc:
+            # Socket closed between the state check and the send. Not an error
+            # worth a traceback — the stream simply outlived the connection.
+            self.unregister(connection_id)
+            logger.debug(
+                "WebSocket send skipped for %s (connection closed): %s",
+                connection_id,
+                exc,
+            )
+
     def send_to_connection(self, connection_id: str, data: Any) -> bool:
         """Send *data* to the connection identified by *connection_id*.
 
@@ -96,10 +123,18 @@ class ConnectionManager:
             return False
         if loop is None or loop.is_closed():
             return False
+        # The socket may already be closing/closed (client disconnected
+        # mid-stream, or the route handler closed it). Scheduling a send now
+        # would run send_text after websocket.close and raise
+        # "Unexpected ASGI message 'websocket.send', after sending
+        # 'websocket.close'." Drop the connection and skip.
+        if websocket.application_state != WebSocketState.CONNECTED:
+            self.unregister(connection_id)
+            return False
 
         payload = data if isinstance(data, str) else json.dumps(data, default=str)
         future = asyncio.run_coroutine_threadsafe(
-            websocket.send_text(payload), loop
+            self._safe_send(connection_id, websocket, payload), loop
         )
         with self._lock:
             self._pending_sends.setdefault(connection_id, []).append(future)

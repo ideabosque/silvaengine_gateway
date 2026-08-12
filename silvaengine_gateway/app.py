@@ -279,6 +279,19 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
 
         connection_manager.set_event_loop(_asyncio.get_running_loop())
 
+        # Call module on_startup hooks (e.g. scheduler start)
+        for mod in manifest:
+            if mod.on_startup:
+                try:
+                    startup_fn = resolve_dispatch(mod.on_startup)
+                    if asyncio.iscoroutinefunction(startup_fn):
+                        await startup_fn()
+                    else:
+                        startup_fn()
+                    gw_logger.info(f"Module '{mod.name}' startup hook completed")
+                except Exception as e:
+                    gw_logger.warning(f"Module '{mod.name}' startup hook failed: {e}")
+
         yield
         gw_logger.info("Shutting down SilvaEngine Gateway...")
 
@@ -327,8 +340,8 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     _warn_multiprocess_compat(setting, manifest, task_kind, rl_kind, gw_logger)
 
     # Rate limiting (global)
-    rate_limit = int(os.environ.get("GATEWAY_RATE_LIMIT", "100"))
-    rate_window = int(os.environ.get("GATEWAY_RATE_WINDOW", "60"))
+    rate_limit = setting.get("rate_limit") or int(os.environ.get("GATEWAY_RATE_LIMIT", "100"))
+    rate_window = setting.get("rate_limit_window") or int(os.environ.get("GATEWAY_RATE_WINDOW", "60"))
     app.add_middleware(
         RateLimitMiddleware,
         max_requests=rate_limit,

@@ -1,0 +1,40 @@
+# Marketing Engine — module manifest fragment
+# Included by routes.yaml via `!include module_routes/marketing_engine.yaml`
+#
+# Staff and admin traffic (lead, contact, place, campaigns, measurement setup)
+# goes through the GraphQL route. The one REST route is the server-to-server
+# conversion proxy: its producers are commerce, CRM, subscription, mobile, and
+# offline systems that already speak HTTP+JSON, and its contract needs HTTP
+# semantics GraphQL cannot express — an Idempotency-Key header and a 202.
+
+name: marketing_engine
+package: marketing_engine
+invoker_class_name: MarketingEngine
+transport: graphql
+config_class: "marketing_engine.handlers.config:Config"
+config_init_style: kwargs
+config_overrides:
+  db_backend: "{setting:me_db_backend}"
+
+# Background scheduler: starts APScheduler ticks on gateway startup,
+# stops them on shutdown. Tick intervals are configurable via settings.
+on_startup: "marketing_engine.scheduler:start_scheduler"
+on_shutdown: "marketing_engine.scheduler:stop_scheduler"
+
+routes:
+  - path: "/{endpoint_id}/marketing_graphql"
+    handler_type: graphql
+    dispatch: "marketing_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
+
+  # REST — server-to-server conversion event proxy (§5.7.10).
+  # Authenticated: accepts writes from trusted backend systems mapped to a
+  # tenant. Returns 202 Accepted; delivery to the ad network happens later on
+  # the tick_conversion_delivery scheduler job, so a producer's checkout path
+  # never waits on an ad network and stays up when one is down.
+  - path: "/{endpoint_id}/ad_conversion_events"
+    handler_type: rest
+    dispatch: "marketing_engine.main:dispatch_ad_conversion_events"
+    methods: ["POST"]
+    auth: true
