@@ -137,14 +137,23 @@ def export_table(cur, table_name, schema_only=False):
         pk_list = ", ".join('"' + c + '"' for c in pk_cols)
         col_defs.append(f'    PRIMARY KEY ({pk_list})')
 
-    # Get indexes
+    # Get indexes.
+    # Match the PK constraint by joining pg_class/pg_namespace on the exact
+    # (case-sensitive) relation name rather than casting the name to ::regclass.
+    # A text->regclass cast parses the string as an unquoted identifier and
+    # down-cases it, so a mixed-case table (e.g. "Nonead_action_logs") is looked
+    # up as "nonead_action_logs" and raises UndefinedTable. The name join uses
+    # the same value information_schema returned, so any valid table works.
     cur.execute("""
         SELECT indexname, indexdef
         FROM pg_indexes
         WHERE schemaname = 'public' AND tablename = %s
         AND indexname NOT IN (
-            SELECT conname FROM pg_constraint
-            WHERE conrelid = %s::regclass AND contype = 'p'
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class cl ON cl.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = cl.relnamespace
+            WHERE n.nspname = 'public' AND cl.relname = %s AND c.contype = 'p'
         )
         ORDER BY indexname
     """, (table_name, table_name))
