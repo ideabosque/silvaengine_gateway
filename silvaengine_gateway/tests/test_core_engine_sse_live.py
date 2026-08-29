@@ -174,8 +174,7 @@ def register_core_engine_agent(gateway_url, token, endpoint_id, part_id,
                                 core_engine_agent_uuid):
     """Register the core-engine-agent fixture with full handler metadata."""
     metadata = {
-        "module_name": "a2a_daemon_engine.handlers.a2a_core_engine_handler",
-        "class_name": "CoreEngineAgentHandler",
+        "agent_type": "core_engine",
         "core_engine_graphql_url": gateway_url,
         "core_engine_ws_url": gateway_url.replace("http://", "ws://"),
         "core_engine_token": token,
