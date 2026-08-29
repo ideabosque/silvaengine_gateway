@@ -481,6 +481,15 @@ def extract_text_from_response(body):
     return ""
 
 
+def extract_context_id(body):
+    """Extract contextId from a JSON-RPC response (the A2A conversation thread)."""
+    result = body.get("result", {})
+    if isinstance(result, dict):
+        # The SDK protobuf field is context_id; JSON serialization uses contextId
+        return result.get("contextId") or result.get("context_id")
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Interactive chatbot: Core Engine Agent through A2A Daemon via Gateway"
@@ -542,7 +551,7 @@ def main():
 
     conversation_history = []
     turn = 0
-    thread_uuid = str(uuid.uuid4())  # Persist across turns for conversation continuity
+    thread_uuid = None  # Adopted from the first response's contextId
 
     while True:
         try:
@@ -557,7 +566,7 @@ def main():
             break
         if user_input.lower() == "clear":
             conversation_history = []
-            thread_uuid = str(uuid.uuid4())  # New thread on clear
+            thread_uuid = None  # Reset; next turn creates a new thread
             print(f"{D}Conversation history cleared.{RST}\n")
             continue
 
@@ -566,9 +575,10 @@ def main():
         # its own task_id for DB persistence.
         request_id = f"chat-{uuid.uuid4().hex[:8]}"
         # Scope SSE to this conversation. The daemon stamps its streaming
-        # events with the thread_uuid, so that — not request_id — is what
-        # identifies our events on the shared partition stream.
-        sse.set_task(thread_uuid)
+        # events with the context_id (adopted from the handler's thread_uuid),
+        # so that — not request_id — is what identifies our events on the
+        # shared partition stream.
+        sse.set_task(thread_uuid or request_id)
 
         print(f"{B}Agent>{RST} ", end="", flush=True)
 
@@ -613,6 +623,18 @@ def main():
                 streamed_text = extract_text_from_response(body)
             except Exception:
                 streamed_text = ""
+
+        # Adopt contextId from the response (first turn creates the thread;
+        # the core engine returns its thread_uuid which the daemon adopts).
+        if http_result["response"] is not None:
+            try:
+                body = http_result["response"].json()
+                ctx_id = extract_context_id(body)
+                if ctx_id and not thread_uuid:
+                    thread_uuid = ctx_id
+                    print(f"{D}(context: {thread_uuid[:12]}...){RST}")
+            except Exception:
+                pass
 
         print()  # newline after streaming chunks
 
