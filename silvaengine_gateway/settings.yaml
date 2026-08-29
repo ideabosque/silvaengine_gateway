@@ -259,11 +259,9 @@ settings:
     env: OPENCLAW_STREAM_TIMEOUT
     default: "300"
 
-  # ── A2A bridge — handler resolution via env vars ──────────────────────
-  A2A_AI_AGENT_MODULE:
-    env: A2A_AI_AGENT_MODULE
-  A2A_AI_AGENT_CLASS:
-    env: A2A_AI_AGENT_CLASS
+  # ── A2A bridge — handler resolved from the agent's DB metadata ────────
+  # module_name / class_name live in each agent's a2a_agents.metadata JSON.
+  # A2A_DEFAULT_AGENT_UUID names which agent to use when a request omits agent_uuid.
   A2A_DEFAULT_AGENT_UUID:
     env: A2A_DEFAULT_AGENT_UUID
     default: a2a-default-agent
