@@ -278,6 +278,7 @@ def register_openclaw_agent(gateway_url, token, endpoint_id, part_id):
             $agentId: String
             $agentName: String!
             $endpointUrl: String!
+            $metadata: JSON
             $updatedBy: String!
         ) {
             insertUpdateA2aAgent(
@@ -286,18 +287,27 @@ def register_openclaw_agent(gateway_url, token, endpoint_id, part_id):
                 agentId: $agentId
                 agentName: $agentName
                 endpointUrl: $endpointUrl
+                metadata: $metadata
                 updatedBy: $updatedBy
             ) {
                 a2aAgent { agentId agentName }
             }
         }
     """
+    openclaw_url = env.get("OPENCLAW_API_URL", DEFAULT_OPENCLAW_URL)
+    openclaw_key = env.get("OPENCLAW_API_KEY", "")
+    metadata = {
+        "agent_type": "openclaw",
+        "openclaw_api_url": openclaw_url,
+        "openclaw_api_key": openclaw_key,
+    }
     variables = {
         "endpointId": endpoint_id,
         "partId": part_id,
         "agentId": OPENCLAW_AGENT_ID,
         "agentName": "OpenClaw Agent",
         "endpointUrl": gateway_url,
+        "metadata": metadata,
         "updatedBy": "e2e-test",
     }
     try:
