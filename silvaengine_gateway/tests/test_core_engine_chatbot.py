@@ -504,6 +504,7 @@ def main():
     core_engine_agent_uuid = (
         args.core_engine_agent_uuid
         or env.get("CORE_ENGINE_AGENT_UUID")
+        or env.get("DEFAULT_AGENT_UUID")
         or DEFAULT_AGENT_UUID
     )
 

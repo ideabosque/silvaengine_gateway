@@ -39,7 +39,7 @@ Prerequisites:
     - Gateway .env at silvaengine_gateway/silvaengine_gateway/tests/.env
       with ADMIN_STATIC_TOKEN, endpoint_id, part_id, db_backend=postgresql
     - PostgreSQL container running (silvaengine-postgres)
-    - An agent registered in ai_agent_core_engine (CORE_ENGINE_AGENT_UUID)
+    - An agent registered in ai_agent_core_engine (DEFAULT_AGENT_UUID)
     - A2A_AI_AGENT_MODULE / A2A_AI_AGENT_CLASS set in the gateway .env
       (or the core-engine-agent DB record carries module_name + class_name
       in its metadata JSON)
@@ -115,6 +115,7 @@ def ctx():
         "env": env,
         "core_engine_agent_uuid": (
             env.get("CORE_ENGINE_AGENT_UUID")
+            or env.get("DEFAULT_AGENT_UUID")
             or DEFAULT_AGENT_UUID
         ),
     }
@@ -720,6 +721,7 @@ def build_context(args):
         "core_engine_agent_uuid": (
             args.core_engine_agent_uuid
             or env.get("CORE_ENGINE_AGENT_UUID")
+            or env.get("DEFAULT_AGENT_UUID")
             or DEFAULT_AGENT_UUID
         ),
     }
@@ -778,7 +780,7 @@ def main():
                         help="Partition ID (default: from gateway .env)")
     parser.add_argument("--core-engine-agent-uuid", default=None,
                         help="ai_agent_core_engine agent UUID "
-                        "(default: from CORE_ENGINE_AGENT_UUID env var)")
+                        "(default: from CORE_ENGINE_AGENT_UUID or DEFAULT_AGENT_UUID env var)")
     args = parser.parse_args()
 
     ctx = build_context(args)

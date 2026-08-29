@@ -259,9 +259,14 @@ settings:
     env: OPENCLAW_STREAM_TIMEOUT
     default: "300"
 
-  # ── A2A bridge — handler resolved from the agent's DB metadata ────────
+  # ── A2A bridge — handler resolved from agent metadata or Config fallback ─
   # module_name / class_name live in each agent's a2a_agents.metadata JSON.
-  # A2A_DEFAULT_AGENT_UUID names which agent to use when a request omits agent_uuid.
+  # A2A_AI_AGENT_MODULE / A2A_AI_AGENT_CLASS are Config-level defaults for
+  # agents that don't specify a handler in their metadata.
+  A2A_AI_AGENT_MODULE:
+    env: A2A_AI_AGENT_MODULE
+  A2A_AI_AGENT_CLASS:
+    env: A2A_AI_AGENT_CLASS
   A2A_DEFAULT_AGENT_UUID:
     env: A2A_DEFAULT_AGENT_UUID
     default: a2a-default-agent
@@ -271,3 +276,19 @@ settings:
   A2A_STREAMING_ENABLED:
     env: A2A_STREAMING_ENABLED
     default: "true"
+
+  # ── Core Engine gateway bridge (forwarded to a2a_daemon_engine Config) ──
+  CORE_ENGINE_GRAPHQL_URL:
+    env: CORE_ENGINE_GRAPHQL_URL
+  CORE_ENGINE_WS_URL:
+    env: CORE_ENGINE_WS_URL
+  CORE_ENGINE_TOKEN:
+    env: CORE_ENGINE_TOKEN
+  CORE_ENGINE_AGENT_UUID:
+    env: DEFAULT_AGENT_UUID
+  CORE_ENGINE_UPDATED_BY:
+    env: CORE_ENGINE_UPDATED_BY
+    default: a2a-daemon
+  CORE_ENGINE_STREAM_TIMEOUT:
+    env: CORE_ENGINE_STREAM_TIMEOUT
+    default: "120"
