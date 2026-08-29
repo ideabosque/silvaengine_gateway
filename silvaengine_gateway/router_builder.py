@@ -819,10 +819,13 @@ def _make_websocket_handler(
                     # Flat message — use as-is
                     params.update(message)
 
-                # Generate async_task_uuid (required by async_execute_ask_model)
-                import uuid as _uuid
-
-                params["async_task_uuid"] = str(_uuid.uuid4())
+                # async_task_uuid is intentionally NOT generated here. If the
+                # client supplied one (flat message or inside "arguments"), it
+                # passes through untouched above. If it's absent,
+                # ai_agent_core_engine.main.AIAgentCoreEngine.ask_model()
+                # generates one itself via generate_async_task_uuid() before
+                # pre-creating the tracked async_task row. Generating it here
+                # too would just clobber any value the client sent.
 
                 # Inject gateway context
                 if not params.get("context"):
