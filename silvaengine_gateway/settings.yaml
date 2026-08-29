@@ -260,9 +260,11 @@ settings:
     default: "300"
 
   # ── A2A bridge — handler resolved from agent metadata or Config fallback ─
-  # module_name / class_name live in each agent's a2a_agents.metadata JSON.
-  # A2A_AI_AGENT_MODULE / A2A_AI_AGENT_CLASS are Config-level defaults for
-  # agents that don't specify a handler in their metadata.
+  # agent_type is a shorthand that maps to module_name / class_name via
+  # AGENT_TYPE_MAP (hermes, core_engine, openclaw, llm). Explicit
+  # module_name / class_name always wins; agent_type is the convenience path.
+  A2A_AI_AGENT_TYPE:
+    env: A2A_AI_AGENT_TYPE
   A2A_AI_AGENT_MODULE:
     env: A2A_AI_AGENT_MODULE
   A2A_AI_AGENT_CLASS:
