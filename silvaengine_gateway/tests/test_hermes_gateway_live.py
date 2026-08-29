@@ -35,7 +35,7 @@ Prerequisites:
     - PostgreSQL container running (silvaengine-postgres)
     - Hermes env vars in the gateway .env:
       HERMES_API_URL, HERMES_API_KEY, HERMES_MODEL,
-      A2A_AI_AGENT_MODULE, A2A_AI_AGENT_CLASS
+      A2A_AI_AGENT_TYPE
 
 Usage:
     # Set env var to enable live tests (pytest mode)
@@ -284,6 +284,7 @@ def register_hermes_agent(gateway_url, token, endpoint_id, part_id):
             $agentId: String
             $agentName: String!
             $endpointUrl: String!
+            $metadata: JSON
             $updatedBy: String!
         ) {
             insertUpdateA2aAgent(
@@ -292,18 +293,29 @@ def register_hermes_agent(gateway_url, token, endpoint_id, part_id):
                 agentId: $agentId
                 agentName: $agentName
                 endpointUrl: $endpointUrl
+                metadata: $metadata
                 updatedBy: $updatedBy
             ) {
                 a2aAgent { agentId agentName }
             }
         }
     """
+    hermes_url = env.get("HERMES_API_URL", DEFAULT_HERMES_URL)
+    hermes_key = env.get("HERMES_API_KEY", "")
+    hermes_model = env.get("HERMES_MODEL", "hermes-agent")
+    metadata = {
+        "agent_type": "hermes",
+        "hermes_api_url": hermes_url,
+        "hermes_api_key": hermes_key,
+        "hermes_model": hermes_model,
+    }
     variables = {
         "endpointId": endpoint_id,
         "partId": part_id,
         "agentId": HERMES_AGENT_ID,
         "agentName": "Hermes Agent",
         "endpointUrl": gateway_url,
+        "metadata": metadata,
         "updatedBy": "e2e-test",
     }
     try:

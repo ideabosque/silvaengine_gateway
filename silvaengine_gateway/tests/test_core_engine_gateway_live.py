@@ -40,9 +40,9 @@ Prerequisites:
       with ADMIN_STATIC_TOKEN, endpoint_id, part_id, db_backend=postgresql
     - PostgreSQL container running (silvaengine-postgres)
     - An agent registered in ai_agent_core_engine (DEFAULT_AGENT_UUID)
-    - A2A_AI_AGENT_MODULE / A2A_AI_AGENT_CLASS set in the gateway .env
-      (or the core-engine-agent DB record carries module_name + class_name
-      in its metadata JSON)
+    - A2A_AI_AGENT_TYPE set in the gateway .env
+      (or the core-engine-agent DB record carries agent_type or
+      module_name + class_name in its metadata JSON)
 
 Usage:
     # Set env var to enable live tests (pytest mode)
@@ -304,12 +304,11 @@ def register_core_engine_agent(gateway_url, token, endpoint_id, part_id, core_en
     """Register the core-engine-agent fixture via the gateway's A2A GraphQL.
 
     Uses ``insertUpdateA2aAgent`` with basic fields plus ``metadata``
-    containing the handler config (module_name, class_name, core_engine_*
+    containing the handler config (agent_type shorthand, core_engine_*
     connection details including core_engine_agent_uuid).
     """
     metadata = {
-        "module_name": "a2a_daemon_engine.handlers.a2a_core_engine_handler",
-        "class_name": "CoreEngineAgentHandler",
+        "agent_type": "core_engine",
         "core_engine_graphql_url": gateway_url,
         "core_engine_ws_url": gateway_url.replace("http://", "ws://"),
         "core_engine_token": token,
@@ -442,6 +441,8 @@ def is_error_text(text):
 def verify_task_message_link():
     """Verify that the latest a2a_messages.task_id matches the latest a2a_tasks.task_id.
 
+    Also verifies that a2a_messages now carries context_id (Phase 12).
+
     Returns (task_id, message_id) if the link is valid, (None, None) otherwise.
     """
     import psycopg2 as _pg
@@ -460,7 +461,7 @@ def verify_task_message_link():
             return None, None
         task_id = task_row[0]
         cur.execute(
-            "SELECT message_id, task_id FROM a2a_messages WHERE task_id = %s ORDER BY created_at DESC LIMIT 1",
+            "SELECT message_id, task_id, context_id FROM a2a_messages WHERE task_id = %s ORDER BY created_at DESC LIMIT 1",
             (task_id,),
         )
         msg_row = cur.fetchone()

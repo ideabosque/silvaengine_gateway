@@ -202,7 +202,8 @@ class SSEListener:
 
 
 def send_message(gateway_url, token, endpoint_id, part_id, text, task_id,
-                 system_prompt=None, conversation_history=None):
+                 system_prompt=None, conversation_history=None,
+                 thread_uuid=None):
     """Send a message/send and return the HTTP response."""
     parts = [{"text": text}]
 
@@ -216,6 +217,8 @@ def send_message(gateway_url, token, endpoint_id, part_id, text, task_id,
         metadata["system_prompt"] = system_prompt
     if conversation_history:
         metadata["conversation_history"] = conversation_history
+    if thread_uuid:
+        metadata["thread_uuid"] = thread_uuid
 
     body = {
         "jsonrpc": "2.0",
@@ -313,6 +316,7 @@ def main():
 
     conversation_history = []
     turn = 0
+    thread_uuid = str(uuid.uuid4())  # Persist across turns for conversation continuity
 
     while True:
         try:
@@ -327,6 +331,7 @@ def main():
             break
         if user_input.lower() == "clear":
             conversation_history = []
+            thread_uuid = str(uuid.uuid4())  # New thread on clear
             print(f"{D}Conversation history cleared.{RST}\n")
             continue
 
@@ -342,6 +347,7 @@ def main():
             user_input, task_id,
             system_prompt=args.system,
             conversation_history=conversation_history if conversation_history else None,
+            thread_uuid=thread_uuid,
         )
 
         # Wait for SSE to deliver streaming chunks (max 30s)
