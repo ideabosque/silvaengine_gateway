@@ -437,7 +437,7 @@ def send_message(gateway_url, token, endpoint_id, part_id, text, request_id,
         "operation": "task_execution",
         "agent_uuid": CORE_ENGINE_AGENT_ID,
         "stream": True,
-        "task_data": {"task_type": "ce_chatbot"},
+        "task_data": {"task_id": request_id, "task_type": "ce_chatbot"},
     }
     if system_prompt:
         metadata["system_prompt"] = system_prompt
@@ -571,14 +571,11 @@ def main():
             continue
 
         turn += 1
-        # Use a simple request ID for JSON-RPC; the daemon generates
-        # its own task_id for DB persistence.
+        # Use a simple request ID for JSON-RPC. This is also passed as
+        # task_data.task_id so the daemon stamps SSE events with it —
+        # the SSE listener filters by this value.
         request_id = f"chat-{uuid.uuid4().hex[:8]}"
-        # Scope SSE to this conversation. The daemon stamps its streaming
-        # events with the context_id (adopted from the handler's thread_uuid),
-        # so that — not request_id — is what identifies our events on the
-        # shared partition stream.
-        sse.set_task(thread_uuid or request_id)
+        sse.set_task(request_id)
 
         print(f"{B}Agent>{RST} ", end="", flush=True)
 
