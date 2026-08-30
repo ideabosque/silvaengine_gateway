@@ -488,9 +488,9 @@ async def chat_loop(
                     break
 
                 if prompt == "/new-thread":
-                    thread_uuid = str(_uuid.uuid4())
+                    thread_uuid = None  # Next turn creates a new thread
                     turn = 0
-                    print(f"\n{C.YELLOW}Started new thread: {thread_uuid}{C.RESET}\n")
+                    print(f"\n{C.YELLOW}Started new thread (will be created on next message){C.RESET}\n")
                     continue
 
                 if prompt == "/retry":
@@ -516,12 +516,13 @@ async def chat_loop(
                     "action": "ask_model",
                     "arguments": {
                         "agent_uuid": agent_uuid,
-                        "thread_uuid": thread_uuid,
                         "user_query": prompt,
                         "updated_by": updated_by,
                         "stream": stream,
                     },
                 }
+                if thread_uuid:
+                    request["arguments"]["thread_uuid"] = thread_uuid
 
                 turn_started = time.time()
                 await ws.send(json.dumps(request))
@@ -640,8 +641,10 @@ def main():
         sys.exit(1)
 
     thread_uuid = args.thread_uuid
-    if not thread_uuid:
-        thread_uuid = str(_uuid.uuid4())
+    # If not provided, start with None — the core engine creates a new
+    # thread on the first turn and returns its UUID. Do NOT mint a random
+    # UUID here: the core engine would try to look it up and fail with
+    # "Not found any thread" because it was never persisted.
 
     base_url = (args.gateway_url or "ws://localhost").rstrip("/")
     ws_base = f"{base_url}:{port}"
