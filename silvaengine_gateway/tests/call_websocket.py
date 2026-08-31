@@ -315,6 +315,15 @@ async def connect_and_stream(
                             pass
                         break
 
+                elif message.get("type") == "ask_model_ack":
+                    # Early ack from ask_model() (SilvaEngine Gateway only)
+                    # -- carries thread_uuid before/alongside the first
+                    # streamed chunk. Not the end of the turn.
+                    if message.get("thread_uuid"):
+                        resolved_thread_uuid = message["thread_uuid"]
+                    print(f"\n[ack] async_task_uuid={message.get('async_task_uuid')} "
+                          f"thread_uuid={message.get('thread_uuid')}")
+
                 elif message.get("type") == "error":
                     close_stream_boundary(stream_state)
                     print(f"\nERROR from server: {message.get('detail')}")
