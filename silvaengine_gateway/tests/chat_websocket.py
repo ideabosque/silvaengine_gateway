@@ -430,6 +430,16 @@ async def receive_streaming_response(
                 close_stream_boundary(stream_state)
                 break
 
+        elif message.get("type") == "ask_model_ack":
+            # Early ack from ask_model() (SilvaEngine Gateway only) --
+            # carries thread_uuid before/alongside the first streamed
+            # chunk. Capture and keep waiting; this isn't the end of the
+            # turn.
+            if message.get("thread_uuid"):
+                resolved_thread_uuid = message["thread_uuid"]
+            if debug_chunks:
+                print(f"\n{C.DIM}[ack] {json.dumps(message, default=str)}{C.RESET}", flush=True)
+
         elif message.get("type") == "error":
             close_stream_boundary(stream_state)
             print(f"\n{C.RED}ERROR: {message.get('detail')}{C.RESET}")
