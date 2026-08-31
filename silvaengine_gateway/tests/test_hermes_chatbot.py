@@ -311,7 +311,7 @@ def main():
 
     conversation_history = []
     turn = 0
-    thread_uuid = str(uuid.uuid4())  # Persist across turns for conversation continuity
+    thread_uuid = None  # Adopted from the first response's contextId
 
     while True:
         try:
@@ -326,7 +326,7 @@ def main():
             break
         if user_input.lower() == "clear":
             conversation_history = []
-            thread_uuid = str(uuid.uuid4())  # New thread on clear
+            thread_uuid = None  # Reset; next turn creates a new thread
             print(f"{D}Conversation history cleared.{RST}\n")
             continue
 
@@ -362,8 +362,8 @@ def main():
         print()  # newline after streaming chunks
 
         if streamed_text:
+            # Only print if SSE didn't already print it in real-time
             if not sse.full_text:
-                # Text came from HTTP response, not SSE — print it now
                 print(f"{G}{streamed_text}{RST}")
             print(f"{D}({len(streamed_text)} chars){RST}")
             # Add to conversation history
