@@ -35,7 +35,6 @@ import json
 import os
 import sys
 import time
-import uuid as _uuid
 from contextlib import suppress
 from pathlib import Path
 
@@ -255,7 +254,16 @@ def print_stream_chunk(message, stream_state=None, debug_chunks=False):
 
 
 def print_unsolicited_stream_message(message, active, stream_state, debug_chunks=False):
-    """Print frames that arrive while the user prompt is open."""
+    """Print frames that arrive while the user prompt is open.
+
+    Deliberately does not capture thread_uuid from these chunks: they're
+    stragglers from whatever turn was previously in flight, and by the time
+    they arrive the user may have already run /new-thread, so attributing
+    a late chunk's thread_uuid to the *next* turn could silently revive an
+    abandoned thread. The unambiguous capture happens in
+    receive_streaming_response, which only ever sees chunks answering the
+    turn it just sent.
+    """
     if "chunk_delta" in message:
         active = True
         _, is_end = print_stream_chunk(message, stream_state, debug_chunks)
@@ -355,12 +363,18 @@ async def receive_streaming_response(
 
     Idle gaps are common while tools run. Do not return to the user prompt
     until the stream ends or the overall timeout is reached.
+
+    Returns ``(full_text, chunk_count, elapsed, thread_uuid)`` where
+    ``thread_uuid`` is the server-resolved value read off the chunks (set
+    even when the request didn't send one, so a fresh thread created by the
+    server can still be reused on the next turn).
     """
     full_text = ""
     chunk_count = 0
     started = started_at or time.time()
     last_chunk_time = None
     stream_state = {"started_at": started}
+    resolved_thread_uuid = None
 
     while True:
         elapsed = time.time() - started
@@ -403,6 +417,8 @@ async def receive_streaming_response(
         if "chunk_delta" in message:
             chunk_count += 1
             last_chunk_time = time.time()
+            if message.get("thread_uuid"):
+                resolved_thread_uuid = message["thread_uuid"]
             delta, is_end = print_stream_chunk(message, stream_state, debug_chunks)
             full_text += delta
 
@@ -425,7 +441,7 @@ async def receive_streaming_response(
 
     elapsed = time.time() - started
     print(f"\n{C.DIM}[+{elapsed:6.2f}s response ended]{C.RESET}", flush=True)
-    return full_text, chunk_count, elapsed
+    return full_text, chunk_count, elapsed, resolved_thread_uuid
 
 
 async def chat_loop(
@@ -528,12 +544,16 @@ async def chat_loop(
                 await ws.send(json.dumps(request))
 
                 print(f"{C.DIM}[+  0.00s request started]{C.RESET}")
-                full_text, chunk_count, elapsed = await receive_streaming_response(
+                full_text, chunk_count, elapsed, resolved_thread_uuid = await receive_streaming_response(
                     incoming_queue,
                     timeout=timeout,
                     debug_chunks=debug_chunks,
                     started_at=turn_started,
                 )
+
+                if resolved_thread_uuid and resolved_thread_uuid != thread_uuid:
+                    thread_uuid = resolved_thread_uuid
+                    print(f"{C.DIM}[thread_uuid: {thread_uuid}]{C.RESET}")
 
                 print(f" {C.DIM}[{chunk_count} chunks, {elapsed:.1f}s]{C.RESET}")
                 print()
@@ -596,7 +616,7 @@ def main():
     parser.add_argument(
         "--thread-uuid",
         default=None,
-        help="Thread UUID (generates a new UUID if not provided)",
+        help="Thread UUID to continue (omit to let the server create a new thread)",
     )
     parser.add_argument(
         "--updated-by",

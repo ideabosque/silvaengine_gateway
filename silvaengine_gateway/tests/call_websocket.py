@@ -15,13 +15,14 @@ Prerequisites:
        (or:  silvaengine-gateway)
     2. ai_agent_core_engine installed:  pip install -e ../ai_agent_core_engine
     3. .env configured with AWS, Neo4j, LLM credentials
-    4. A valid agent_uuid and thread_uuid in DynamoDB
+    4. A valid agent_uuid (--thread-uuid is optional: the core engine
+       creates a new thread and resolves its own thread_uuid when omitted)
 
 Usage:
-    # Basic — uses .env for endpoint_id and part_id
+    # Basic — uses .env for endpoint_id and part_id, server creates a thread
     python silvaengine_gateway/tests/call_websocket.py
 
-    # Specify agent and thread
+    # Continue an existing thread
     python silvaengine_gateway/tests/call_websocket.py \\
         --agent-uuid "agent-xxx" \\
         --thread-uuid "thread-xxx" \\
@@ -217,18 +218,24 @@ async def connect_and_stream(
             "action": "ask_model",
             "arguments": {
                 "agent_uuid": agent_uuid,
-                "thread_uuid": thread_uuid,
                 "user_query": prompt,
                 "updated_by": updated_by,
                 "stream": stream,
             },
         }
+        # Only include thread_uuid when the caller supplied one. Omitting it
+        # lets the core engine create a new thread (or reuse a recent one for
+        # this agent_uuid/user_id) and resolve its own thread_uuid -- sending
+        # a client-minted UUID for a thread that was never persisted causes
+        # "Not found any thread" server-side.
+        if thread_uuid:
+            request["arguments"]["thread_uuid"] = thread_uuid
         if input_files:
             request["arguments"]["input_files"] = input_files
 
         print(f"\nSending ask_model request:")
         print(f"  agent_uuid: {agent_uuid}")
-        print(f"  thread_uuid: {thread_uuid}")
+        print(f"  thread_uuid: {thread_uuid or '(none - server will create one)'}")
         print(f"  prompt: {prompt}")
         print()
 
@@ -243,6 +250,7 @@ async def connect_and_stream(
         last_chunk_time = None
         idle_timeout = 8  # seconds without a chunk → stream complete
         stream_state = {"started_at": started}
+        resolved_thread_uuid = thread_uuid
 
         try:
             while True:
@@ -259,6 +267,8 @@ async def connect_and_stream(
                     is_end = message.get("is_message_end", False)
                     index = message.get("index", -1)
                     group_id = message.get("message_group_id", "")
+                    if message.get("thread_uuid"):
+                        resolved_thread_uuid = message["thread_uuid"]
 
                     if verbose:
                         metadata = {
@@ -297,6 +307,7 @@ async def connect_and_stream(
                         print(f"  Elapsed: {elapsed:.2f}s")
                         print(f"[+{elapsed:6.2f}s response ended]")
                         print(f"  message_group_id: {group_id}")
+                        print(f"  thread_uuid: {resolved_thread_uuid}")
                         # Drain the trailing dispatch result (short timeout)
                         try:
                             await asyncio.wait_for(ws.recv(), timeout=5)
@@ -343,6 +354,7 @@ async def connect_and_stream(
         "full_text": full_text,
         "chunk_count": chunk_count,
         "elapsed": time.time() - started,
+        "thread_uuid": resolved_thread_uuid,
     }
 
 
@@ -393,7 +405,7 @@ def main():
     parser.add_argument(
         "--thread-uuid",
         default=None,
-        help="Thread UUID (generates a new UUID if not provided)",
+        help="Thread UUID to continue (omit to let the server create a new thread)",
     )
     parser.add_argument(
         "--prompt",
@@ -468,12 +480,12 @@ def main():
         f"?token={token}&part_id={part_id}"
     )
 
-    # Generate thread_uuid if not provided
+    # Leave thread_uuid unset when not provided -- the core engine creates a
+    # new thread (or reuses a recent one for this agent_uuid/user_id) and
+    # resolves its own thread_uuid. Minting a random UUID here would name a
+    # thread that was never persisted, and the server would reject it with
+    # "Not found any thread".
     thread_uuid = args.thread_uuid
-    if not thread_uuid:
-        import uuid as _uuid
-        thread_uuid = str(_uuid.uuid4())
-        print(f"Generated thread_uuid: {thread_uuid}")
 
     print(f"Using agent_uuid: {agent_uuid}")
     print(f"Using updated_by: {updated_by}")
@@ -497,6 +509,7 @@ def main():
         print(f"\n\n{'='*60}")
         print("SUCCESS: WebSocket streaming integration test passed!")
         print(f"  connection_id: {result['connection_id']}")
+        print(f"  thread_uuid: {result.get('thread_uuid')}")
         print(f"  chunks: {result['chunk_count']}")
         print(f"  text length: {len(result['full_text'])} chars")
         print(f"  elapsed: {result['elapsed']:.2f}s")
