@@ -281,12 +281,13 @@ def main():
     try:
         hr = requests.get(f"{hermes_url}/health", timeout=5)
         if hr.status_code != 200:
-            print(f"{R}Hermes API Server not healthy: HTTP {hr.status_code}{RST}")
-            return
-        print(f"{G}✓{RST} Hermes API Server: {hermes_url}")
+            print(f"{Y}Hermes API Server not healthy: HTTP {hr.status_code}{RST}")
+            print(f"{D}Continuing — the A2A daemon may reach Hermes via the gateway.{RST}")
+        else:
+            print(f"{G}✓{RST} Hermes API Server: {hermes_url}")
     except Exception as e:
-        print(f"{R}Cannot reach Hermes at {hermes_url}: {e}{RST}")
-        return
+        print(f"{Y}Cannot reach Hermes directly at {hermes_url}{RST}")
+        print(f"{D}Continuing — the A2A daemon may reach Hermes via the gateway.{RST}")
 
     try:
         gr = requests.get(f"{gateway_url}/health", timeout=5)

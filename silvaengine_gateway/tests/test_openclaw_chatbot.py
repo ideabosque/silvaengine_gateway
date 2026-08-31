@@ -286,12 +286,13 @@ def main():
         ocr = requests.get(f"{openclaw_url}/v1/models",
                            headers={"Authorization": f"Bearer {openclaw_key}"}, timeout=5)
         if ocr.status_code != 200:
-            print(f"{R}OpenClaw Gateway not healthy: HTTP {ocr.status_code}{RST}")
-            return
-        print(f"{G}✓{RST} OpenClaw Gateway: {openclaw_url}")
+            print(f"{Y}OpenClaw Gateway not healthy: HTTP {ocr.status_code}{RST}")
+            print(f"{D}Continuing — the A2A daemon may reach OpenClaw via the gateway.{RST}")
+        else:
+            print(f"{G}✓{RST} OpenClaw Gateway: {openclaw_url}")
     except Exception as e:
-        print(f"{R}Cannot reach OpenClaw at {openclaw_url}: {e}{RST}")
-        return
+        print(f"{Y}Cannot reach OpenClaw directly at {openclaw_url}{RST}")
+        print(f"{D}Continuing — the A2A daemon may reach OpenClaw via the gateway.{RST}")
 
     try:
         gr = requests.get(f"{gateway_url}/health", timeout=5)
