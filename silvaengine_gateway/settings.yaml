@@ -275,6 +275,27 @@ settings:
     env: A2A_STREAMING_ENABLED
     default: "true"
 
+  # ── A2A push notifications + Agent Card (Phase 13; a2a_daemon_engine) ────
+  # Anti-SSRF allowlist for push webhook URLs. Comma-separated hostnames or
+  # wildcard patterns (e.g. "hooks.acme.com,*.acme.com"). Recommended when push
+  # notifications are used. Empty still enforces HTTPS + private-CIDR blocking.
+  A2A_PUSH_WEBHOOK_ALLOWLIST:
+    env: A2A_PUSH_WEBHOOK_ALLOWLIST
+  A2A_PUSH_REQUIRE_HTTPS:
+    env: A2A_PUSH_REQUIRE_HTTPS
+    default: "true"
+  # Advertised A2A input/output modes (comma-separated). Leave "text" unless the
+  # resolved backend actually returns files / structured data.
+  A2A_DEFAULT_INPUT_MODES:
+    env: A2A_DEFAULT_INPUT_MODES
+    default: "text"
+  A2A_DEFAULT_OUTPUT_MODES:
+    env: A2A_DEFAULT_OUTPUT_MODES
+    default: "text"
+  # Optional documentation / terms URL surfaced on the authenticated extended card.
+  A2A_DOCUMENTATION_URL:
+    env: A2A_DOCUMENTATION_URL
+
   # ── Core Engine gateway bridge (forwarded to a2a_daemon_engine Config) ──
   CORE_ENGINE_GRAPHQL_URL:
     env: CORE_ENGINE_GRAPHQL_URL
