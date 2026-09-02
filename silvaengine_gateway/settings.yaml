@@ -176,6 +176,39 @@ settings:
   me_db_backend:
     env: ME_DB_BACKEND
     default: postgresql
+  # Marketing Engine scheduler tenant context. The scheduler runs outside any
+  # HTTP request, so it cannot derive partition_key from the gateway's
+  # Part-Id header. Provide the tenant(s) directly:
+  #   - partition_keys (multi-tenant): comma-separated "endpoint_id#part_id"
+  #   - partition_key / endpoint_id + part_id (single-tenant forms)
+  me_scheduler_partition_keys:
+    env: ME_SCHEDULER_PARTITION_KEYS
+  me_scheduler_partition_key:
+    env: ME_SCHEDULER_PARTITION_KEY
+  me_scheduler_endpoint_id:
+    env: ME_SCHEDULER_ENDPOINT_ID
+  me_scheduler_part_id:
+    env: ME_SCHEDULER_PART_ID
+  # Marketing Engine scheduler tick intervals (seconds). Forwarded to
+  # marketing_engine Config; consumed by marketing_engine.scheduler.
+  me_scheduler_agent_ops_interval:
+    env: ME_SCHEDULER_AGENT_OPS_INTERVAL
+  me_scheduler_enrichment_replay_interval:
+    env: ME_SCHEDULER_ENRICHMENT_REPLAY_INTERVAL
+  me_scheduler_orphan_scan_interval:
+    env: ME_SCHEDULER_ORPHAN_SCAN_INTERVAL
+  me_scheduler_lead_replay_interval:
+    env: ME_SCHEDULER_LEAD_REPLAY_INTERVAL
+  me_scheduler_agent_ops_replay_interval:
+    env: ME_SCHEDULER_AGENT_OPS_REPLAY_INTERVAL
+  me_scheduler_retention_interval:
+    env: ME_SCHEDULER_RETENTION_INTERVAL
+  me_scheduler_sync_interval:
+    env: ME_SCHEDULER_SYNC_INTERVAL
+  me_scheduler_routine_replay_interval:
+    env: ME_SCHEDULER_ROUTINE_REPLAY_INTERVAL
+  me_scheduler_delivery_interval:
+    env: ME_SCHEDULER_DELIVERY_INTERVAL
   ace_pg_table_prefix:
     env: ACE_PG_TABLE_PREFIX
     default: ace_
