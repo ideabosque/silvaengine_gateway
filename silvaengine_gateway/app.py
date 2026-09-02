@@ -275,9 +275,9 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
         gw_logger.info("Starting SilvaEngine Gateway...")
 
         # Bind the running event loop to the ConnectionManager
-        import asyncio as _asyncio
+        import asyncio
 
-        connection_manager.set_event_loop(_asyncio.get_running_loop())
+        connection_manager.set_event_loop(asyncio.get_running_loop())
 
         # Call module on_startup hooks (e.g. scheduler start)
         for mod in manifest:
@@ -312,7 +312,6 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
             if mod.on_shutdown:
                 try:
                     shutdown_fn = resolve_dispatch(mod.on_shutdown)
-                    import asyncio
 
                     if asyncio.iscoroutinefunction(shutdown_fn):
                         await shutdown_fn()
