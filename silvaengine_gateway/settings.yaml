@@ -232,6 +232,43 @@ settings:
     env: FUNCT_ZIP_PATH
   funct_extract_path:
     env: FUNCT_EXTRACT_PATH
+  # Git module installation (installMcpPackageFromGit)
+  git_install_path:
+    env: GIT_INSTALL_PATH
+  git_install_timeout:
+    env: GIT_INSTALL_TIMEOUT
+    default: "300"
+    type: int
+  git_allowed_hosts:
+    env: GIT_ALLOWED_HOSTS
+    default: github.com
+  git_token:
+    env: GIT_TOKEN
+  git_ssh_key:
+    env: GIT_SSH_KEY
+  git_require_ref:
+    env: GIT_REQUIRE_REF
+    default: "true"
+    type: bool
+  git_refresh_policy:
+    env: GIT_REFRESH_POLICY
+    default: manual
+  git_refresh_ttl:
+    env: GIT_REFRESH_TTL
+    default: "3600"
+    type: int
+  git_version_strategy:
+    env: GIT_VERSION_STRATEGY
+    default: ref
+  git_tag_pattern:
+    env: GIT_TAG_PATTERN
+  # Legacy S3 package upload compatibility (kept during Git migration).
+  # Effective only when FUNCT_BUCKET_NAME is also set (mcp_daemon_engine
+  # computes the effective flag as raw AND bucket AND s3 client).
+  enable_s3_package_upload:
+    env: ENABLE_S3_PACKAGE_UPLOAD
+    default: "true"
+    type: bool
 
   # ── Hermes Agent API bridge (forwarded to a2a_daemon_engine Config) ───
   HERMES_API_URL:
