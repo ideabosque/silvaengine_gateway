@@ -119,7 +119,7 @@ mutation SyncExternalMcpServer(
     $serverName: String!,
     $baseUrl: String!,
     $bearerToken: String,
-    $headers: JSONCamelCase,
+    $headers: JSONSnakeCase,
     $namePrefix: String,
     $updatedBy: String!
 ) {
