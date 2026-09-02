@@ -15,6 +15,16 @@ config_class: "marketing_engine.handlers.config:Config"
 config_init_style: kwargs
 config_overrides:
   db_backend: "{setting:me_db_backend}"
+  # Scheduler tenant context — the scheduler runs outside HTTP requests and
+  # cannot derive partition_key from the Part-Id header, so it reads these
+  # from Config. partition_keys is the multi-tenant form (comma-separated
+  # "endpoint_id#part_id"); partition_key or endpoint_id + part_id are the
+  # single-tenant forms (combined as "{endpoint_id}#{part_id}" by
+  # marketing_engine.scheduler).
+  partition_keys: "{setting:me_scheduler_partition_keys}"
+  partition_key: "{setting:me_scheduler_partition_key}"
+  endpoint_id: "{setting:me_scheduler_endpoint_id}"
+  part_id: "{setting:me_scheduler_part_id}"
 
 # Background scheduler: starts APScheduler ticks on gateway startup,
 # stops them on shutdown. Tick intervals are configurable via settings.
