@@ -93,3 +93,6 @@ modules:
 
   # ── Marketing Engine ───────────────────────────────────────────────────
   - !include module_routes/marketing_engine.yaml
+
+  # ── Harness Engineering Engine ─────────────────────────────────────────
+  - !include module_routes/harness_engineering_engine.yaml
