@@ -255,6 +255,26 @@ settings:
     default: "60"
     type: int
 
+  # ── Harness Engineering Engine ───────────────────────────────────────
+  hsk_pg_table_prefix:
+    env: HSK_PG_TABLE_PREFIX
+    default: "hsk_"
+  hsk_skill_root:
+    env: HSK_SKILL_ROOT
+    default: "skills"
+  hsk_scheduler_partition_keys:
+    env: HSK_SCHEDULER_PARTITION_KEYS
+  hsk_scheduler_partition_key:
+    env: HSK_SCHEDULER_PARTITION_KEY
+  hsk_scheduler_endpoint_id:
+    env: HSK_SCHEDULER_ENDPOINT_ID
+  hsk_scheduler_part_id:
+    env: HSK_SCHEDULER_PART_ID
+  hsk_scheduler_prune_interval:
+    env: HSK_SCHEDULER_PRUNE_INTERVAL
+  hsk_scheduler_prune_keep:
+    env: HSK_SCHEDULER_PRUNE_KEEP
+
   # ── MCP Daemon Engine (forwarded to mcp_daemon_engine Config) ─────────
   transport:
     env: MCP_TRANSPORT

@@ -1,0 +1,34 @@
+# Harness Engineering Engine — module manifest fragment
+# Included by routes.yaml via `!include module_routes/harness_engineering_engine.yaml`
+
+name: harness_engineering_engine
+package: harness_engineering_engine
+invoker_class_name: HarnessEngineeringEngine
+transport: graphql
+config_class: "harness_engineering_engine.handlers.config:Config"
+config_init_style: dict
+config_overrides:
+  pg_table_prefix: "{setting:hsk_pg_table_prefix}"
+  hsk_skill_root: "{setting:hsk_skill_root}"
+  # Scheduler tenant context — the scheduler runs outside HTTP requests and
+  # cannot derive partition_key from the Part-Id header, so it reads these
+  # from Config. partition_keys is the multi-tenant form (comma-separated
+  # "endpoint_id#part_id"); partition_key or endpoint_id + part_id are the
+  # single-tenant forms (combined as "{endpoint_id}#{part_id}" by
+  # harness_engineering_engine.scheduler).
+  partition_keys: "{setting:hsk_scheduler_partition_keys}"
+  partition_key: "{setting:hsk_scheduler_partition_key}"
+  endpoint_id: "{setting:hsk_scheduler_endpoint_id}"
+  part_id: "{setting:hsk_scheduler_part_id}"
+
+# Background scheduler: starts APScheduler ticks on gateway startup,
+# stops them on shutdown. Tick intervals are configurable via settings.
+on_startup: "harness_engineering_engine.scheduler:start_scheduler"
+on_shutdown: "harness_engineering_engine.scheduler:stop_scheduler"
+
+routes:
+  - path: "/{endpoint_id}/harness_graphql"
+    handler_type: graphql
+    dispatch: "harness_engineering_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
