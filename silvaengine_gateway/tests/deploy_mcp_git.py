@@ -273,6 +273,25 @@ def _print_install_result(result):
         print(f"  {result['message']}")
 
 
+def _redact_sensitive(value):
+    """Return a copy of value with credential-like fields redacted for logs."""
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(
+                marker in lowered
+                for marker in ("password", "token", "secret", "key", "credential")
+            ):
+                redacted[key] = "***REDACTED***"
+            else:
+                redacted[key] = _redact_sensitive(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════
@@ -438,7 +457,7 @@ def main():
     else:
         print(f"  Module:    {module_name}")
     if variables_override:
-        print(f"  Variables: {json.dumps(variables_override)}")
+        print(f"  Variables: {json.dumps(_redact_sensitive(variables_override))}")
     print(f"{'=' * 60}\n")
 
     # ── 1. Health check ────────────────────────────────────────────
