@@ -11,7 +11,10 @@ dependencies = [
     # Core dependencies
     "knowledge_graph_engine",
     "rfq_engine",
-    "mcp-daemon-engine",
+    "silvaengine-daemon",
+    "mcp-protocol-plugin",
+    "a2a-protocol-plugin",
+    "capability-mcp-plugin",
     "ai_coordination_engine",
     # FastAPI stack
     "fastapi>=0.104.0",

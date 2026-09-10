@@ -1,0 +1,93 @@
+# MCP Protocol Plugin — module manifest fragment
+# Included by routes.yaml via `!include module_routes/mcp_protocol_plugin.yaml`
+# Replaces the former mcp_daemon_engine module route.
+
+name: mcp_protocol_plugin
+package: mcp_protocol_plugin
+invoker_class_name: MCPDaemonEngine
+transport: hybrid
+config_class: "mcp_protocol_plugin.handlers.config:Config"
+config_init_style: dict
+config_exclude_keys:
+  - host
+  - workers
+  - routes_config_path
+  - task_backend
+  - task_table
+  - task_ttl
+  - rate_limit_backend
+  - rate_limit_table
+on_shutdown: "silvaengine_daemon.sse:cleanup_sse"
+sse_manager: "silvaengine_daemon.sse:sse_manager"
+exception_handlers:
+  - exception_class: "silvaengine_daemon.errors:AuthenticationError"
+    status_code: 401
+  - exception_class: "silvaengine_daemon.errors:TokenExpiredError"
+    status_code: 401
+  - exception_class: "silvaengine_daemon.errors:InvalidRequestError"
+    status_code: 400
+  - exception_class: "silvaengine_daemon.errors:RateLimitExceeded"
+    status_code: 429
+  - exception_class: "silvaengine_daemon.errors:DaemonError"
+    status_code: 500
+routes:
+  # GraphQL — MCP daemon queries/mutations
+  - path: "/{endpoint_id}/mcp_daemon_graphql"
+    handler_type: graphql
+    dispatch: "silvaengine_daemon.gateway:dispatch_mcp_graphql"
+    methods: ["POST"]
+    auth: true
+
+  # REST — MCP JSON-RPC (no SSE broadcast)
+  - path: "/{endpoint_id}/mcp"
+    handler_type: rest
+    dispatch: "silvaengine_daemon.gateway:dispatch_mcp_jsonrpc"
+    methods: ["POST"]
+    auth: true
+
+  # SSE stream (GET) — long-lived SSE connection
+  - path: "/{endpoint_id}/sse"
+    handler_type: sse
+    methods: ["GET"]
+    auth: true
+
+  # SSE POST — JSON-RPC message + SSE push to connected clients
+  - path: "/{endpoint_id}/sse"
+    handler_type: rest
+    dispatch: "silvaengine_daemon.gateway:dispatch_mcp_sse_message"
+    methods: ["POST"]
+    auth: true
+
+  # Background — async tool execution
+  - path: "/{endpoint_id}/mcp_async_execute"
+    handler_type: background
+    dispatch: "silvaengine_daemon.gateway:dispatch_mcp_async"
+    methods: ["POST"]
+    auth: true
+
+  # Task status
+  - path: "/{endpoint_id}/mcp_async/status/{task_id}"
+    handler_type: task_status
+    methods: ["GET"]
+    auth: true
+
+  # Admin — cache refresh
+  - path: "/{endpoint_id}/admin/cache/refresh"
+    handler_type: rest
+    dispatch: "silvaengine_daemon.gateway:dispatch_mcp_cache_refresh"
+    methods: ["POST"]
+    auth: true
+
+  # Admin — cache clear (specific partition)
+  - path: "/{endpoint_id}/admin/cache"
+    handler_type: rest
+    dispatch: "silvaengine_daemon.gateway:dispatch_mcp_cache_clear"
+    methods: ["DELETE"]
+    auth: true
+
+  # Endpoint info
+  - path: "/{endpoint_id}/mcp_info"
+    handler_type: rest
+    dispatch: "silvaengine_daemon.gateway:dispatch_mcp_info"
+    methods: ["GET"]
+    auth: true

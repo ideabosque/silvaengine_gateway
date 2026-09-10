@@ -1,0 +1,25 @@
+# Capability MCP Plugin — module manifest fragment
+# Included by routes.yaml via `!include module_routes/capability_mcp_plugin.yaml`
+# Extracted from the former mcp_daemon_engine capability_mcp surface.
+
+name: capability_mcp_plugin
+package: capability_mcp_plugin
+transport: hybrid
+config_class: "mcp_protocol_plugin.handlers.config:Config"
+config_init_style: dict
+config_exclude_keys:
+  - host
+  - workers
+  - routes_config_path
+  - task_backend
+  - task_table
+  - task_ttl
+  - rate_limit_backend
+  - rate_limit_table
+routes:
+  # GraphQL — Capability MCP queries/mutations (providers, tools, registration, invocation)
+  - path: "/{endpoint_id}/capability_mcp_graphql"
+    handler_type: graphql
+    dispatch: "silvaengine_daemon.gateway:dispatch_capability_mcp_graphql"
+    methods: ["POST"]
+    auth: true

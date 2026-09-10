@@ -40,8 +40,8 @@ modules:
   # ── Supplier Rating Engine ────────────────────────────────────────────
   - !include module_routes/supplier_rating_engine.yaml
 
-  # ── MCP Daemon Engine ────────────────────────────────────────────────
-  - !include module_routes/mcp_daemon_engine.yaml
+  # ── MCP Protocol Plugin (via silvaengine_daemon) ──────────────────────
+  - !include module_routes/mcp_protocol_plugin.yaml
 
   # ── Client Engine ────────────────────────────────────────────────────
   - !include module_routes/client_engine.yaml
@@ -88,8 +88,11 @@ modules:
   # ── AI Agent Core Engine ─────────────────────────────────────────────
   - !include module_routes/ai_agent_core_engine.yaml
 
-  # ── A2A Daemon Engine ────────────────────────────────────────────────
-  - !include module_routes/a2a_daemon_engine.yaml
+  # ── A2A Protocol Plugin (via silvaengine_daemon) ──────────────────────
+  - !include module_routes/a2a_protocol_plugin.yaml
+
+  # ── Capability MCP Plugin (via silvaengine_daemon) ────────────────────
+  - !include module_routes/capability_mcp_plugin.yaml
 
   # ── Orchestration Engine (Banyanos) ────────────────────────────────────
   - !include module_routes/orchestration_engine.yaml
