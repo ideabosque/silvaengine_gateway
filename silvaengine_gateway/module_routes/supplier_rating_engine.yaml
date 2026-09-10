@@ -1,0 +1,17 @@
+# Supplier Rating Engine — module manifest fragment
+# Included by routes.yaml via `!include module_routes/supplier_rating_engine.yaml`
+
+name: supplier_rating_engine
+package: supplier_rating_engine
+invoker_class_name: SupplierRatingEngine
+transport: graphql
+config_class: "supplier_rating_engine.handlers.config:Config"
+config_init_style: dict
+config_overrides:
+  pg_table_prefix: "{setting:sre_pg_table_prefix}"
+routes:
+  - path: "/{endpoint_id}/supplier_rating_graphql"
+    handler_type: graphql
+    dispatch: "supplier_rating_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
