@@ -6,6 +6,7 @@ from silvaengine_gateway.router_builder import (
     ModuleSpec,
     RouteSpec,
     build_router_from_manifest,
+    init_module_configs,
     resolve_dispatch,
     validate_manifest,
 )
@@ -55,6 +56,53 @@ def test_validate_manifest_empty():
     """Test that an empty manifest validates without warnings."""
     warnings = validate_manifest([])
     assert warnings == []
+
+
+def test_init_module_configs_skips_unset_setting_reference_override(monkeypatch):
+    """A {setting:KEY} override whose KEY resolves to None (never configured,
+    no env var and no `default:` in settings.yaml) must not wipe out the
+    module's own copy of the shared setting — e.g. harness_engineering_engine's
+    optional openai_api_key/openai_base_url override should fall back to the
+    shared credential when no HSK-specific one is set. A reference resolving
+    to a real, explicit falsy value (e.g. a boolean False) must still apply,
+    and a literal (non {setting:...}) override value always applies as given.
+    """
+    captured = {}
+
+    class FakeConfig:
+        @classmethod
+        def initialize(cls, logger, setting):
+            captured["setting"] = setting
+
+    monkeypatch.setattr(
+        "silvaengine_gateway.router_builder.resolve_dispatch",
+        lambda ref: FakeConfig,
+    )
+
+    module = ModuleSpec(
+        name="fake_module",
+        package="fake_module",
+        config_class="fake_module.handlers.config:Config",
+        config_init_style="dict",
+        config_overrides={
+            "openai_api_key": "{setting:hsk_openai_api_key}",
+            "xml_convert": "{setting:aace_xml_convert}",
+            "literal_key": "literal_value",
+        },
+    )
+
+    setting = {
+        "openai_api_key": "shared-key",
+        "hsk_openai_api_key": None,
+        "aace_xml_convert": False,
+    }
+
+    init_module_configs([module], setting)
+
+    result = captured["setting"]
+    assert result["openai_api_key"] == "shared-key"
+    assert result["xml_convert"] is False
+    assert result["literal_key"] == "literal_value"
 
 
 def test_validate_manifest_duplicate_paths():
