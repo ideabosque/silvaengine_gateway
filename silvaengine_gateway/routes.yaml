@@ -37,6 +37,9 @@ modules:
   # ── RFQ Engine ────────────────────────────────────────────────────────
   - !include module_routes/rfq_engine.yaml
 
+  # ── Supplier Rating Engine ────────────────────────────────────────────
+  - !include module_routes/supplier_rating_engine.yaml
+
   # ── MCP Daemon Engine ────────────────────────────────────────────────
   - !include module_routes/mcp_daemon_engine.yaml
 
