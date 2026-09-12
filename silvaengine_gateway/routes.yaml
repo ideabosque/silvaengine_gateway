@@ -91,9 +91,6 @@ modules:
   # ── A2A Protocol Plugin (via silvaengine_daemon) ──────────────────────
   - !include module_routes/a2a_protocol_plugin.yaml
 
-  # ── Capability MCP Plugin (via silvaengine_daemon) ────────────────────
-  - !include module_routes/capability_mcp_plugin.yaml
-
   # ── Orchestration Engine (Banyanos) ────────────────────────────────────
   - !include module_routes/orchestration_engine.yaml
 
