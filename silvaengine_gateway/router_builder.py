@@ -991,11 +991,30 @@ def init_module_configs(
         # Override values may reference other setting keys via {setting:KEY}.
         # e.g. config_overrides: {pg_table_prefix: "{setting:rfq_pg_table_prefix}"}
         # → resolved to setting["rfq_pg_table_prefix"] at runtime.
+        #
+        # A {setting:KEY} reference that resolves to None (the referenced
+        # setting key has no env var set and declares no `default:` in
+        # settings.yaml) is treated as "no override" and skipped, leaving
+        # module_setting[override_key] at the value already copied from the
+        # shared setting above. This matters for optional overrides like
+        # harness_engineering_engine's openai_api_key/openai_base_url (see
+        # hsk_openai_api_key in settings.yaml): unset by default, so the
+        # module keeps using the shared credential unless an HSK-specific
+        # one is explicitly set — without this skip, every module with such
+        # an optional override would get its shared value wiped out to None
+        # by default. Deliberately checked as `is None`, not falsy, so an
+        # override resolving to a real falsy value (e.g. ai_agent_core_engine's
+        # boolean xml_convert explicitly set to false) still applies — only
+        # a truly *unset* reference is skipped. A literal (non {setting:...})
+        # override value is always applied as given.
         if module.config_overrides:
             for override_key, override_val in module.config_overrides.items():
                 if isinstance(override_val, str) and override_val.startswith("{setting:") and override_val.endswith("}"):
                     ref_key = override_val[len("{setting:"):-1]
-                    override_val = setting.get(ref_key)
+                    resolved_val = setting.get(ref_key)
+                    if resolved_val is None:
+                        continue
+                    override_val = resolved_val
                 module_setting[override_key] = override_val
 
         if not module_setting:

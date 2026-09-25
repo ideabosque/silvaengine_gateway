@@ -36,8 +36,8 @@ _MONOREPO = Path(__file__).resolve().parent.parent.parent.parent
 
 
 def _discover_module_roots():
-    """Scan module_routes/*.yaml for ``package:`` names and resolve their
-    project directories on disk.
+    """Scan module_routes/*.yaml for referenced package names and resolve
+    their project directories on disk.
 
     Searches every sibling repo under the parent of the silvaengine monorepo
     (e.g. ``gitrepo/silvaengine/<pkg>``, ``gitrepo/banyanos/<pkg>``, …) so new
@@ -45,6 +45,19 @@ def _discover_module_roots():
     so missing modules are silently skipped.  This is fully data-driven —
     adding a new module_routes/<name>.yaml is enough; no edit to this file
     is needed.
+
+    Two kinds of package references are collected:
+
+    - The module's own ``package:`` field (e.g. ``a2a_protocol_plugin``).
+    - The leading package name of any ``"pkg.module:attr"`` dispatch-style
+      reference (``dispatch``, ``ping_dispatch``, ``sse_manager``,
+      ``on_shutdown``, ``config_class``). Shared substrate packages like
+      ``silvaengine_daemon`` are never a module in their own right — they're
+      only ever referenced this way, as the target of another module's
+      ``dispatch:`` string (e.g. ``"silvaengine_daemon.gateway:dispatch_a2a"``)
+      — so without this second scan their sibling root never gets added and
+      every dispatch into them fails with ``No module named 'silvaengine_daemon'``
+      even though the route manifest itself looks perfectly valid.
     """
     import re
 
@@ -61,19 +74,29 @@ def _discover_module_roots():
         if child.is_dir()
     ]
 
-    for yaml_file in sorted(_MODULE_ROUTES_DIR.glob("*.yaml")):
-        text = yaml_file.read_text(encoding="utf-8")
-        # Lightweight regex — avoid a full YAML parse because module_routes
-        # files use custom !include tags that require the gateway's loader.
-        m = re.search(r"^package:\s*(\S+)", text, re.MULTILINE)
-        if not m:
-            continue
-        package = m.group(1).strip("\"'")
+    _REF_FIELDS = ("dispatch", "ping_dispatch", "sse_manager", "on_shutdown", "config_class")
+    _REF_PATTERN = re.compile(
+        r'^\s*(?:%s):\s*["\']([\w.]+):[\w.]+["\']' % "|".join(_REF_FIELDS),
+        re.MULTILINE,
+    )
+
+    def _add_package(package: str) -> None:
         for base in search_roots:
             candidate = base / package
             if candidate.is_dir() and str(candidate) not in roots:
                 roots.append(str(candidate))
-                break
+                return
+
+    for yaml_file in sorted(_MODULE_ROUTES_DIR.glob("*.yaml")):
+        text = yaml_file.read_text(encoding="utf-8")
+        # Lightweight regexes — avoid a full YAML parse because module_routes
+        # files use custom !include tags that require the gateway's loader.
+        m = re.search(r"^package:\s*(\S+)", text, re.MULTILINE)
+        if m:
+            _add_package(m.group(1).strip("\"'"))
+
+        for ref_match in _REF_PATTERN.finditer(text):
+            _add_package(ref_match.group(1).split(".", 1)[0])
 
     return roots
 

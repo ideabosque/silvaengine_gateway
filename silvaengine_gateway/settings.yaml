@@ -265,6 +265,18 @@ settings:
   hsk_skill_root:
     env: HSK_SKILL_ROOT
     default: "skills"
+  # HSK-scoped override for P9's OpenAI-assisted section generation. Routed
+  # through harness_engineering_engine's config_overrides (openai_api_key /
+  # openai_base_url) instead of the shared openai_api_key/openai_base_url
+  # setting, so testing P9 against a different provider (e.g. Ollama Cloud)
+  # never repoints the credential other engines share (KGE's text2cypher
+  # search, ai_agent_core_engine, ...) — that exact mix-up broke KGE catalog
+  # search gateway-wide before this override existed. Unset (the default)
+  # means harness_engineering_engine falls back to the shared credential.
+  hsk_openai_api_key:
+    env: HSK_OPENAI_API_KEY
+  hsk_openai_base_url:
+    env: HSK_OPENAI_BASE_URL
   hsk_scheduler_partition_keys:
     env: HSK_SCHEDULER_PARTITION_KEYS
   hsk_scheduler_partition_key:

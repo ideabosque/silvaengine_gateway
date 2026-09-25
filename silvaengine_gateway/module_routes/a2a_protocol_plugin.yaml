@@ -1,0 +1,45 @@
+# A2A Protocol Plugin — module manifest fragment
+# Included by routes.yaml via `!include module_routes/a2a_protocol_plugin.yaml`
+# Replaces the former a2a_daemon_engine module route.
+
+name: a2a_protocol_plugin
+package: a2a_protocol_plugin
+transport: hybrid
+config_class: "a2a_protocol_plugin.handlers.config:Config"
+config_init_style: kwargs
+on_shutdown: "silvaengine_daemon.sse:cleanup_sse"
+sse_manager: "silvaengine_daemon.sse:sse_manager"
+routes:
+  # GraphQL — A2A core queries/mutations (agents, tasks, messages, settings)
+  - path: "/{endpoint_id}/a2a_core_graphql"
+    handler_type: graphql
+    dispatch: "silvaengine_daemon.gateway:dispatch_a2a_graphql"
+    methods: ["POST"]
+    auth: true
+
+  # REST — A2A JSON-RPC 2.0 protocol handler (message/send, tasks/get, tasks/cancel)
+  - path: "/{endpoint_id}/a2a"
+    handler_type: rest
+    dispatch: "silvaengine_daemon.gateway:dispatch_a2a_jsonrpc"
+    methods: ["POST"]
+    auth: true
+
+  # SSE stream (GET) — long-lived per-partition A2A task event stream
+  - path: "/{endpoint_id}/a2a_sse"
+    handler_type: sse
+    methods: ["GET"]
+    auth: true
+
+  # SSE POST — A2A JSON-RPC message + SSE push to connected clients
+  - path: "/{endpoint_id}/a2a_sse"
+    handler_type: rest
+    dispatch: "silvaengine_daemon.gateway:dispatch_a2a_sse_message"
+    methods: ["POST"]
+    auth: true
+
+  # REST — A2A Agent Card discovery (public, no auth)
+  - path: "/{endpoint_id}/.well-known/agent-card.json"
+    handler_type: rest
+    dispatch: "silvaengine_daemon.gateway:dispatch_a2a_agent_card"
+    methods: ["GET"]
+    auth: false
