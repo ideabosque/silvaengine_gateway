@@ -10,6 +10,11 @@ config_init_style: dict
 config_overrides:
   pg_table_prefix: "{setting:hsk_pg_table_prefix}"
   hsk_skill_root: "{setting:hsk_skill_root}"
+  # HSK-scoped override for P9 section generation — falls back to the
+  # shared openai_api_key/openai_base_url setting when unset (see
+  # settings.yaml's hsk_openai_api_key/hsk_openai_base_url comment).
+  openai_api_key: "{setting:hsk_openai_api_key}"
+  openai_base_url: "{setting:hsk_openai_base_url}"
   # Scheduler tenant context — the scheduler runs outside HTTP requests and
   # cannot derive partition_key from the Part-Id header, so it reads these
   # from Config. partition_keys is the multi-tenant form (comma-separated
