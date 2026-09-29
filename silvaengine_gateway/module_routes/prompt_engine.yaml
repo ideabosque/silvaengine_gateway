@@ -11,4 +11,4 @@ routes:
     handler_type: graphql
     dispatch: "prompt_engine.main:dispatch_graphql"
     methods: ["POST"]
-    auth: true
+    auth: false

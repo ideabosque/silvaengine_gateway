@@ -5,6 +5,19 @@ SilvaEngine Gateway - FastAPI app factory.
 Creates the FastAPI app, loads route manifest, initializes auth + rate limit
 middleware, mounts health/auth routes, and dynamically registers module
 dispatch routes from the manifest.
+
+Banyan hosting (built-in): the gateway can host the Banyan 12 engines,
+which were built for the AWS Lambda chain (API Gateway → perm_engine
+Lambda authorizer → engine Lambda, settings from the ``se-configdata``
+DynamoDB table, cross-engine calls over httpx pools pointed at the cloud
+API Gateway). Four pieces adapt the gateway to that contract with zero
+changes on the engine side: the se-configdata setting overlay
+(setting_builder), the framework pool bootstrap
+(``_bootstrap_framework_pools`` below), the Banyan path normalizer
+(middleware.path_normalizer), and the PermAuthorizer auth bridge
+(auth.middleware). Everything is inert unless Banyan hosting is enabled
+via env (``SETTING_SOURCE=se-configdata`` and/or ``ENDPOINT_ID``) — a
+gateway deployed without those variables behaves exactly as before.
 """
 
 from __future__ import print_function
@@ -14,7 +27,7 @@ __author__ = "silvaengine"
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI
 
@@ -137,13 +150,16 @@ def _configure_task_backend(setting: Dict[str, Any], gw_logger: logging.Logger) 
     kind = str(
         setting.get("task_backend") or os.getenv("GATEWAY_TASK_BACKEND", "memory")
     ).lower()
-    ttl = int(
-        setting.get("task_ttl")
-        or os.getenv("GATEWAY_TASK_TTL", str(DEFAULT_TASK_TTL_SECONDS))
+    # setting dict values are Any; the ``or`` chain keeps a spurious None
+    # in the inferred union even though the getenv default makes None
+    # unreachable — annotate the intermediates to state that.
+    ttl_raw: Any = setting.get("task_ttl") or os.getenv(
+        "GATEWAY_TASK_TTL", str(DEFAULT_TASK_TTL_SECONDS)
     )
+    ttl = int(ttl_raw)
 
     if kind == "dynamodb":
-        table = setting.get("task_table") or os.getenv(
+        table: Any = setting.get("task_table") or os.getenv(
             "GATEWAY_TASK_TABLE", "silvaengine-gateway-tasks"
         )
         set_task_backend(
@@ -169,7 +185,7 @@ def _make_rate_limit_store(setting: Dict[str, Any], gw_logger: logging.Logger):
     ).lower()
 
     if kind == "dynamodb":
-        table = setting.get("rate_limit_table") or os.getenv(
+        table: Any = setting.get("rate_limit_table") or os.getenv(
             "GATEWAY_RATE_LIMIT_TABLE", "silvaengine-gateway-ratelimit"
         )
         gw_logger.info(f"Rate-limit backend: DynamoDB table '{table}'")
@@ -177,6 +193,224 @@ def _make_rate_limit_store(setting: Dict[str, Any], gw_logger: logging.Logger):
 
     gw_logger.info("Rate-limit backend: in-memory")
     return InMemoryRateLimitStore(), kind
+
+
+# ---------------------------------------------------------------------------
+# Banyan hosting — framework connection pool bootstrap
+# ---------------------------------------------------------------------------
+# In the Lambda chain, ``silvaengine_base`` attempts pool initialization at
+# cold start via its ``PluginInitializer`` (``resources.py
+# pre_initialize_plugins``). That path, however, expects plugin entries of
+# the shape ``[{"type": ..., "module_name": ...}]`` — the se-configdata
+# record's ``plugins`` variable is a *pool bundle*
+# (``[{"config": {pool: settings}}]``, verified against the staging record
+# via ``scripts/probe_seconfig.py``), so the PluginManager extracts zero
+# plugins from it and only logs "Skipping plugin config without 'type'
+# field" (non-blocking, by design).
+#
+# This bootstrap closes the gap on the gateway transport by registering the
+# pools directly through the framework's own ``ConnectionPoolManager``:
+#
+#     extract pools from the record shape → derive each pool's connection
+#     type (explicit ``type`` field wins, else a name-prefix map) →
+#     ``register_connection_type`` (public API, same call the engines use) →
+#     ``create_pools_from_config`` (synchronous; per-pool failures are
+#     logged by the framework and do not abort the rest).
+#
+# It must run BEFORE ``init_module_configs``: every Banyan engine's Config
+# skips its own ``postgres_main`` registration when that pool name already
+# exists, so pre-created pools win and engines do no duplicate work — the
+# exact reuse contract the engines implement against this manager singleton.
+#
+# Fail-fast: when the plugins config yields pools but none could be created
+# (hard configuration errors), ``create_pools_from_config`` raises — the
+# startup fails loudly instead of serving traffic with no pools.
+#
+# No-op when the setting carries no ``plugins`` key (non-Banyan deployments
+# keep today's behavior).
+
+# Connection-type derivation: explicit per-pool ``type`` wins; otherwise the
+# first matching name prefix decides. Unknown pools are skipped with a
+# warning (safe default — an unregistered type would fail every request
+# routed through it; better to leave those to their owning engines).
+_POOL_TYPE_PREFIXES: Tuple[Tuple[str, str], ...] = (
+    ("postgres", "postgresql"),
+    ("httpx", "httpx"),
+    ("neo4j", "neo4j"),
+    ("boto3", "boto3"),
+)
+
+
+def _extract_pools(plugins: Any) -> Dict[str, Dict[str, Any]]:
+    """Extract ``{pool_name: config}`` from the record's plugins variable.
+
+    Supports both observed shapes:
+    - bundle:  ``[{"config": {pool: {...}}}, ...]`` (staging record / seed)
+    - flat:    ``[{pool: {...}}, ...]`` or a bare ``{pool: {...}}`` dict
+
+    A pool entry is a dict carrying ``settings`` (the connections layer's
+    per-connection config) and/or an explicit ``type``/``pool`` block.
+    """
+    entries: List[Any]
+    if isinstance(plugins, list):
+        entries = plugins
+    else:
+        entries = [plugins]
+
+    pools: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        bundle = entry.get("config")
+        source: Dict[str, Any] = bundle if isinstance(bundle, dict) else entry
+        for name, cfg in source.items():
+            if not isinstance(cfg, dict):
+                continue
+            if "settings" in cfg or "type" in cfg or "pool" in cfg:
+                pools[str(name)] = cfg
+    return pools
+
+
+def _derive_pool_type(name: str, cfg: Dict[str, Any]) -> str:
+    """Derive the connection type for a pool (explicit ``type`` wins)."""
+    explicit = cfg.get("type")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip().lower()
+    lowered = name.lower()
+    for prefix, type_name in _POOL_TYPE_PREFIXES:
+        if lowered.startswith(prefix):
+            return type_name
+    return ""
+
+
+def _register_connection_types(
+    mgr: Any, types_needed: List[str], gw_logger: logging.Logger
+) -> None:
+    """Register the framework's built-in connection types on demand.
+
+    Uses the same public ``register_connection_type`` API the engines use
+    (e.g. setting_engine's self-build path), so registration semantics
+    cannot drift. Optional drivers are import-guarded exactly like
+    ``silvaengine_connections.connections.__init__``.
+    """
+    classes: Dict[str, Any] = {}
+    try:
+        from silvaengine_connections.connections.postgresql import (
+            PostgreSQLConnection,
+            PostgreSQLConnectionPool,
+        )
+
+        classes["postgresql"] = (PostgreSQLConnectionPool, PostgreSQLConnection)
+    except ImportError:
+        gw_logger.warning("Pool bootstrap: postgresql driver not importable")
+    try:
+        from silvaengine_connections.connections.httpx import (
+            HTTPXConnection,
+            HTTPXConnectionPool,
+        )
+
+        classes["httpx"] = (HTTPXConnectionPool, HTTPXConnection)
+    except ImportError:
+        gw_logger.warning("Pool bootstrap: httpx driver not importable")
+    try:
+        from silvaengine_connections.connections.neo4j import (
+            Neo4jConnection,
+            Neo4jConnectionPool,
+        )
+
+        classes["neo4j"] = (Neo4jConnectionPool, Neo4jConnection)
+    except ImportError:
+        gw_logger.warning("Pool bootstrap: neo4j driver not importable")
+    try:
+        from silvaengine_connections.connections.boto3 import (
+            Boto3Connection,
+            Boto3ConnectionPool,
+        )
+
+        classes["boto3"] = (Boto3ConnectionPool, Boto3Connection)
+    except ImportError:
+        gw_logger.warning("Pool bootstrap: boto3 driver not importable")
+
+    registered = mgr.get_connection_types()
+    for type_name in types_needed:
+        if type_name in registered:
+            continue
+        if type_name not in classes:
+            continue  # unknown type — extraction already warned per pool
+        pool_cls, conn_cls = classes[type_name]
+        mgr.register_connection_type(type_name, pool_cls, conn_cls)
+        gw_logger.info("Pool bootstrap: registered connection type %r", type_name)
+
+
+def _bootstrap_framework_pools(
+    setting: Dict[str, Any], gw_logger: logging.Logger
+) -> bool:
+    """Create framework connection pools from ``setting["plugins"]``.
+
+    Args:
+        setting: The merged gateway setting dict (se-configdata overlay
+            included).
+        gw_logger: Gateway logger for pool bootstrap diagnostics.
+
+    Returns:
+        True when pools were created, False when there was nothing to do
+        (no ``plugins`` key — e.g. non-Banyan deployments).
+
+    Raises:
+        Whatever ``create_pools_from_config`` propagates when the plugins
+        config yields pools but none could be created — fail fast at
+        startup rather than serving requests with missing pools.
+    """
+    plugins = setting.get("plugins")
+    if not plugins:
+        gw_logger.debug(
+            "Pool bootstrap: no 'plugins' in setting — nothing to do"
+        )
+        return False
+
+    pools = _extract_pools(plugins)
+    if not pools:
+        gw_logger.warning(
+            "Pool bootstrap: 'plugins' present but no pool entries found "
+            "(expected [{config: {pool: {settings: ...}}}])"
+        )
+        return False
+
+    typed: Dict[str, Dict[str, Any]] = {}
+    skipped: List[str] = []
+    types_needed: List[str] = []
+    for name, cfg in pools.items():
+        type_name = _derive_pool_type(name, cfg)
+        if not type_name:
+            skipped.append(name)
+            gw_logger.warning(
+                "Pool bootstrap: cannot derive connection type for pool "
+                "%r — skipping (add an explicit 'type' field or extend the "
+                "prefix map)",
+                name,
+            )
+            continue
+        typed[name] = dict(cfg)
+        typed[name]["type"] = type_name
+        if type_name not in types_needed:
+            types_needed.append(type_name)
+    if skipped:
+        gw_logger.warning("Pool bootstrap: skipped pools: %s", ", ".join(skipped))
+
+    from silvaengine_connections import ConnectionPoolManager
+
+    mgr = ConnectionPoolManager()
+    _register_connection_types(mgr, types_needed, gw_logger)
+
+    created = mgr.create_pools_from_config(typed)
+    gw_logger.info(
+        "Pool bootstrap: framework pools created from 'plugins' setting "
+        "(%d/%d pools: %s)",
+        len(created),
+        len(typed),
+        ", ".join(sorted(created)) if created else "none",
+    )
+    return bool(created)
 
 
 def _warn_multiprocess_compat(
@@ -229,7 +463,7 @@ def _warn_multiprocess_compat(
 # ---------------------------------------------------------------------------
 
 
-def create_app(setting: Dict[str, Any] = None) -> FastAPI:
+def create_app(setting: Optional[Dict[str, Any]] = None) -> FastAPI:
     """
     Create and configure the FastAPI gateway application.
 
@@ -248,6 +482,14 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
 
     # Load route manifest
     manifest = load_route_manifest(GatewayConfig)
+
+    # Banyan: framework connection pools (postgres_main/audit/telemetry,
+    # httpx loopback pools, redis, ...) must exist BEFORE engine Configs
+    # initialize — each engine reuses a pool when the name already exists
+    # instead of building its own. Registered directly through the
+    # framework's ConnectionPoolManager public API; no-op without
+    # setting["plugins"].
+    _bootstrap_framework_pools(setting, gw_logger)
 
     # Auto-initialize module Config classes declared in manifest
     from .router_builder import init_module_configs
@@ -362,6 +604,29 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
         public_suffixes=["/.well-known/agent-card.json"],
     )
 
+    # Banyan hosting: path normalizer + PermAuthorizer bridge (merged from
+    # api-runtime). Added after FlexJWT, so at RUNTIME they wrap it:
+    #   CORS → Normalizer → Bridge → FlexJWT → RateLimit → routes
+    # The bridge must sit OUTSIDE FlexJWT: Banyan JWTs are verified by the
+    # real perm_engine authorizer, whose marker lets FlexJWT hand off
+    # instead of re-rejecting. Mounted only when ENDPOINT_ID is set —
+    # other deployments see zero change.
+    from .auth.middleware import BanyanAuthorizerBridge
+    from .middleware.path_normalizer import BanyanPathNormalizer
+
+    banyan_endpoint_id = os.getenv("ENDPOINT_ID", "").strip()
+    if banyan_endpoint_id:
+        app.add_middleware(
+            BanyanAuthorizerBridge,
+            endpoint_id=banyan_endpoint_id,
+            setting=setting,
+        )
+        app.add_middleware(
+            BanyanPathNormalizer,
+            stage=os.getenv("ADAPTER_STAGE", "beta"),
+            area=os.getenv("ADAPTER_AREA", "core"),
+        )
+
     # CORS — added LAST so it is the OUTERMOST middleware (see note above).
     from fastapi.middleware.cors import CORSMiddleware
 
@@ -402,7 +667,10 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     for mod in manifest:
         for exc_spec in mod.exception_handlers:
             try:
-                exc_cls = resolve_dispatch(exc_spec["exception_class"])
+                # The resolved reference is an exception CLASS (a type),
+                # not a callable — annotate as Any for the registration
+                # below.
+                exc_cls: Any = resolve_dispatch(exc_spec["exception_class"])
                 status_code = exc_spec.get("status_code", 500)
 
                 # Closure captures status_code; FastAPI calls handler(request, exc)
@@ -452,6 +720,20 @@ def create_app_from_env() -> FastAPI:
     from dotenv import load_dotenv
 
     load_dotenv()
+
+    # Match run_gateway (__main__ entry): configure INFO-level logging on the
+    # root logger. Without this, uvicorn --factory leaves the root logger at
+    # WARNING and every gateway-module INFO line (se-configdata overlay, pool
+    # bootstrap, route registration, …) is silently swallowed — the container
+    # looks healthy but the deploy-time verification log markers never appear.
+    # basicConfig is a no-op when a root handler already exists (e.g. tests or
+    # future uvicorn --log-config setups), so this cannot double-configure.
+    logging.basicConfig(
+        stream=__import__("sys").stdout,
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
     return create_app(build_setting_from_env())
 
 

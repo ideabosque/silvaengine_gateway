@@ -100,7 +100,7 @@ def _include_constructor(loader: _IncludeLoader, node: yaml.Node):
 _IncludeLoader.add_constructor("!include", _include_constructor)
 
 
-def load_route_manifest(config: GatewayConfig) -> List[ModuleSpec]:
+def load_route_manifest(config: type[GatewayConfig]) -> List[ModuleSpec]:
     """
     Load route manifest from:
     1. GATEWAY_ROUTES_CONFIG_PATH env var (YAML or JSON file)
@@ -113,6 +113,10 @@ def load_route_manifest(config: GatewayConfig) -> List[ModuleSpec]:
         modules:
           - !include routes/kge.yaml
           - !include routes/rfq.yaml
+
+    Note: GatewayConfig is a class-attribute singleton (never
+    instantiated) — callers pass the class itself, and ``initialize``
+    stores routes_config_path & friends directly on ``cls``.
     """
     # Priority 1: explicit path
     configured_path = config.routes_config_path or os.environ.get(

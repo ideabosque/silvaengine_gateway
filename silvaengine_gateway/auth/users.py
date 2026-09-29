@@ -13,7 +13,12 @@ from typing import Dict, List, Optional
 class LocalUser:
     """Simple local user for JWT auth."""
 
-    def __init__(self, username: str, hashed_password: str, roles: List[str] = None):
+    def __init__(
+        self,
+        username: str,
+        hashed_password: str,
+        roles: Optional[List[str]] = None,
+    ):
         self.username = username
         self.hashed_password = hashed_password
         self.roles = roles or []

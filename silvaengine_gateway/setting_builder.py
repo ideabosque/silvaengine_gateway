@@ -382,6 +382,226 @@ def _resolve_setting(key: str, spec: Dict[str, Any]) -> Any:
     return _coerce(value, spec.get("type"), key)
 
 
+# ---------------------------------------------------------------------------
+# Banyan hosting — se-configdata setting provider (DDB-backed source)
+# ---------------------------------------------------------------------------
+# Banyan's iron rule: configuration has a single source — the DynamoDB
+# ``se-configdata`` table. Rows live under the partition key
+# ``setting_id = {stage}_{area}_{endpoint_id}`` (e.g. ``beta_core_banyan``)
+# with a ``variable`` sort key and a typed ``value`` attribute, one row per
+# variable (``plugins``, ``jwt_secret``, ``jwt_config``, ``region_name``,
+# ``email_code_redis``, ...). The Lambda chain reads them via
+# ``silvaengine_dynamodb_base.models.config.ConfigModel``; this provider
+# reads the same rows with the boto3 resource API (whose item
+# deserialization matches ``ConfigModel.boto3_items_to_dict_list``) so the
+# gateway and Lambda interpret records identically.
+#
+# Merge policy (decision #4 of the merge plan, user-approved):
+#
+# 1. env-derived keys (settings.yaml spec) form the base;
+# 2. se-configdata keys OVERLAY them — DDB wins, matching Lambda behavior
+#    (the record is the unique source; env only bootstraps infrastructure
+#    such as the DDB endpoint/region and stage/area/endpoint_id);
+# 3. ``SETTING_OVERRIDE_<KEY>`` env vars are an audited emergency escape
+#    hatch that beats the DDB record (logged loudly when used).
+#
+# Loopback rewrite: when ``BANYAN_LOOPBACK_BASE_URL`` is set, every httpx
+# pool in the ``plugins`` config gets its ``settings.base_url`` rewritten
+# to that value so cross-engine calls stay inside the container (decision
+# #7). Outbound LLM provider calls are unaffected — llm_engine's providers
+# pass absolute URLs, which httpx resolves regardless of ``base_url``.
+#
+# Fail-fast: with ``SETTING_SOURCE=se-configdata`` a missing or unreadable
+# record raises at startup — mirroring ``ConfigModel.find`` — instead of
+# letting engines run half-configured.
+
+#: Setting source selector: "env" (default, no-op) | "se-configdata".
+SETTING_SOURCE_ENV = "SETTING_SOURCE"
+SETTING_SOURCE_DDB = "se-configdata"
+
+#: Bootstrap variables (read from the environment, NOT the setting dict —
+#: the record itself cannot describe how to reach it).
+STAGE_ENV = "ADAPTER_STAGE"
+AREA_ENV = "ADAPTER_AREA"
+ENDPOINT_ID_ENV = "ENDPOINT_ID"
+TABLE_ENV = "SE_CONFIGDATA_TABLE"
+ENDPOINT_URL_ENV = "SE_CONFIGDATA_ENDPOINT_URL"
+
+#: Emergency escape hatch prefix: SETTING_OVERRIDE_jwt_secret=... wins
+#: over the DDB record for that single key.
+OVERRIDE_PREFIX = "SETTING_OVERRIDE_"
+
+#: When set (e.g. "http://127.0.0.1:8000/beta/core/banyan"), httpx pool
+#: base_urls in the plugins config are rewritten to this value so
+#: cross-engine calls loop back through this gateway instead of the cloud
+#: API Gateway. Empty → record values pass through untouched.
+LOOPBACK_BASE_URL_ENV = "BANYAN_LOOPBACK_BASE_URL"
+
+
+def _load_se_configdata_setting(setting: Dict[str, Any]) -> Dict[str, Any]:
+    """Overlay the se-configdata record onto ``setting``.
+
+    See the Banyan hosting section comment above for the merge policy.
+    Returns the setting dict unchanged when ``SETTING_SOURCE`` is not
+    ``se-configdata`` — existing deployments see zero behavior change.
+    """
+    source = os.getenv(SETTING_SOURCE_ENV, "").strip()
+    if source != SETTING_SOURCE_DDB:
+        return setting
+
+    record = _read_configdata_record(setting)
+    _rewrite_httpx_base_urls(record)
+
+    merged = dict(setting)
+    merged.update(record)  # DDB keys win over env-derived keys
+
+    merged = _apply_env_overrides(merged)
+
+    logger.info(
+        "se-configdata setting loaded: setting_id=%s variables=%d "
+        "(env base=%d, merged=%d)",
+        _setting_id(),
+        len(record),
+        len(setting),
+        len(merged),
+    )
+    return merged
+
+
+def _setting_id() -> str:
+    """Build ``{stage}_{area}_{endpoint_id}`` from bootstrap env vars."""
+    stage = os.getenv(STAGE_ENV, "beta").strip() or "beta"
+    area = os.getenv(AREA_ENV, "core").strip() or "core"
+    endpoint_id = os.getenv(ENDPOINT_ID_ENV, "banyan").strip() or "banyan"
+    return f"{stage}_{area}_{endpoint_id}"
+
+
+def _read_configdata_record(setting: Dict[str, Any]) -> Dict[str, Any]:
+    """Query se-configdata rows for the setting_id and flatten them.
+
+    Uses the boto3 resource API: items come back deserialized to native
+    types, matching ``ConfigModel.boto3_items_to_dict_list`` semantics.
+    """
+    import boto3
+
+    table_name = os.getenv(TABLE_ENV, "se-configdata").strip() or "se-configdata"
+    endpoint_url = os.getenv(ENDPOINT_URL_ENV, "").strip() or None
+
+    region = (
+        setting.get("region_name")
+        or os.getenv("region_name")
+        or os.getenv("AWS_REGION")
+    )
+    access_key = setting.get("aws_access_key_id") or os.getenv("aws_access_key_id")
+    secret_key = (
+        setting.get("aws_secret_access_key")
+        or os.getenv("aws_secret_access_key")
+    )
+
+    resource_kwargs: Dict[str, Any] = {"region_name": region}
+    if endpoint_url:
+        # DynamoDB Local (or an in-VPC endpoint) for fully-offline runs.
+        resource_kwargs["endpoint_url"] = endpoint_url
+    if access_key and secret_key:
+        resource_kwargs["aws_access_key_id"] = access_key
+        resource_kwargs["aws_secret_access_key"] = secret_key
+
+    table = boto3.resource("dynamodb", **resource_kwargs).Table(table_name)
+
+    record: Dict[str, Any] = {}
+    kwargs: Dict[str, Any] = {
+        "KeyConditionExpression": "setting_id = :sid",
+        "ExpressionAttributeValues": {":sid": _setting_id()},
+    }
+    try:
+        while True:
+            response = table.query(**kwargs)
+            for item in response.get("Items", []):
+                variable = item.get("variable")
+                if variable:
+                    record[str(variable)] = item.get("value")
+            if "LastEvaluatedKey" not in response:
+                break
+            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
+    except Exception as e:
+        raise ValueError(
+            f"Failed to read se-configdata table '{table_name}' "
+            f"(setting_id={_setting_id()}): {e}"
+        ) from e
+
+    if not record:
+        # Mirror ConfigModel.find: an empty record is a configuration
+        # error, not an empty config.
+        raise ValueError(
+            f"Cannot find values with the setting_id ({_setting_id()}) "
+            f"in table '{table_name}'."
+        )
+
+    return record
+
+
+def _rewrite_httpx_base_urls(record: Dict[str, Any]) -> None:
+    """Point cross-engine httpx pools at the gateway loopback (in place).
+
+    se-configdata's httpx pool base_urls point at the cloud API Gateway so
+    Lambda-resident engines can reach each other. Inside the container
+    those calls must loop back through this gateway (which authenticates
+    the engines' short-lived service tokens via the authorizer bridge).
+    Only httpx pools are touched; postgres/redis/neo4j pool configs pass
+    through untouched, and llm_engine's provider calls use absolute URLs
+    so they never consult base_url.
+    """
+    loopback = os.getenv(LOOPBACK_BASE_URL_ENV, "").strip()
+    if not loopback:
+        return
+
+    plugins = record.get("plugins")
+    if not isinstance(plugins, list):
+        return
+
+    rewritten = 0
+    for entry in plugins:
+        if not isinstance(entry, dict):
+            continue
+        config = entry.get("config")
+        if not isinstance(config, dict):
+            continue
+        for pool_name, pool_cfg in config.items():
+            if not isinstance(pool_name, str) or not pool_name.startswith(
+                "httpx"
+            ):
+                continue
+            if not isinstance(pool_cfg, dict):
+                continue
+            pool_settings = pool_cfg.get("settings")
+            if isinstance(pool_settings, dict):
+                pool_settings["base_url"] = loopback
+                rewritten += 1
+
+    if rewritten:
+        logger.info(
+            "Rewrote %d httpx pool base_url(s) to Banyan loopback (%s)",
+            rewritten,
+            loopback,
+        )
+
+
+def _apply_env_overrides(merged: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply SETTING_OVERRIDE_<KEY> emergency overrides (last word)."""
+    for name, value in os.environ.items():
+        if not name.startswith(OVERRIDE_PREFIX):
+            continue
+        key = name[len(OVERRIDE_PREFIX):].strip()
+        if not key:
+            continue
+        merged[key] = value
+        logger.warning(
+            "SETTING_OVERRIDE_%s applied — env override beats se-configdata",
+            key,
+        )
+    return merged
+
+
 def build_setting_from_env() -> Dict[str, Any]:
     """Build the gateway setting dict from environment variables.
 
@@ -397,6 +617,12 @@ def build_setting_from_env() -> Dict[str, Any]:
     setting: Dict[str, Any] = {
         key: _resolve_setting(key, entry or {}) for key, entry in spec.items()
     }
+
+    # Banyan: overlay the se-configdata record (DDB) when SETTING_SOURCE is
+    # enabled — DDB keys win (config unique-source iron rule), with
+    # SETTING_OVERRIDE_* as the audited emergency escape hatch. Inert
+    # without SETTING_SOURCE=se-configdata.
+    setting = _load_se_configdata_setting(setting)
 
     # Initialize GatewayConfig early so the Cognito IdP client is available
     # when _build_internal_mcp_config() resolves the bearer token below.
