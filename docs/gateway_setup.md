@@ -85,16 +85,52 @@ zero Python changes.**
 | `on_shutdown` | No | `"pkg.module:cleanup_fn"` — called on shutdown |
 | `sse_manager` | No | `"pkg.module:sse_manager"` — for `handler_type: sse` |
 | `exception_handlers` | No | List of `{exception_class, status_code}` |
+| `proxy_targets` | No | `target_id -> base_url` map for `handler_type: proxy` routes — either `"{setting:GATEWAY_PROXY_TARGETS}"` (recommended; a whole-map indirection resolved from one JSON-encoded env var) or a literal dict |
+| `proxy_timeout` | No | Per-module proxy request timeout in seconds (default: `30.0`); literal or `{setting:KEY}` |
 
 ### Route Fields
 
 | Field | Required | Description |
 |---|---|---|
 | `path` | Yes | URL path template |
-| `handler_type` | No | `graphql`, `rest`, `background`, `task_status`, `sse` |
-| `dispatch` | Yes* | `"pkg.module:function"` — required except for `task_status` and `sse` |
+| `handler_type` | No | `graphql`, `rest`, `background`, `task_status`, `sse`, `websocket`, `proxy` |
+| `dispatch` | Yes* | `"pkg.module:function"` — required except for `task_status`, `sse`, `websocket`, and `proxy` |
 | `methods` | No | HTTP methods (default: `["POST"]`) |
 | `auth` | No | Require auth (default: `true`) |
+
+### Reverse-Proxying to Another Gateway Instance
+
+`handler_type: proxy` forwards a request to another SilvaEngine Gateway
+instance instead of dispatching in-process — see
+[docs/gateway_proxy_plan.md](gateway_proxy_plan.md) for the full design.
+
+```yaml
+  - name: remote_gateway_proxy
+    package: remote_gateway_proxy
+    transport: rest
+    proxy_targets: "{setting:GATEWAY_PROXY_TARGETS}"
+    proxy_timeout: "{setting:GATEWAY_PROXY_TIMEOUT}"
+    routes:
+      - path: "/{endpoint_id}/remote/{target_id}/{proxy_path:path}"
+        handler_type: proxy
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+        auth: true
+```
+
+Set `GATEWAY_PROXY_TARGETS` to a JSON object mapping each `target_id` to a
+remote gateway's base URL — adding, removing, or repointing a target is a
+single env var change, no YAML or code edits:
+
+```
+GATEWAY_PROXY_TARGETS={"us":"https://us.example.com","eu":"https://eu.example.com"}
+```
+
+`GATEWAY_PROXY_ALLOWLIST` (comma-separated hostnames) is optional and
+defaults to the hosts already present in `GATEWAY_PROXY_TARGETS`; set it
+explicitly only to enforce a narrower allowlist than the configured
+targets. The caller's own `Authorization` header is forwarded to the
+remote instance as-is — both gateways are expected to trust the same
+identity provider.
 
 ### Adding a New Module
 
