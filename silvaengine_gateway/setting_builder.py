@@ -343,7 +343,9 @@ def _coerce(value: Any, type_name: Any, key: str) -> Any:
             return float(value)
         if type_name == "bool":
             return str(value).strip().lower() in ("1", "true", "yes", "on")
-    except (TypeError, ValueError):
+        if type_name == "json":
+            return value if isinstance(value, (dict, list)) else json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
         logger.warning(
             "settings.yaml: '%s' -> cannot coerce %r to %s; using raw value",
             key,

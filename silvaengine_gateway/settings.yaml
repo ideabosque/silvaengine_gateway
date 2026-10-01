@@ -416,3 +416,24 @@ settings:
   CORE_ENGINE_STREAM_TIMEOUT:
     env: CORE_ENGINE_STREAM_TIMEOUT
     default: "120"
+
+  # ── Gateway-to-gateway proxy bridge (handler_type: proxy routes) ────────
+  # Dynamic target_id -> base_url map, JSON-encoded, e.g.:
+  #   GATEWAY_PROXY_TARGETS={"us":"https://us.example.com","eu":"https://eu.example.com"}
+  # Adding, removing, or repointing a remote gateway is a single env var
+  # change — no settings.yaml or module_routes/*.yaml edits.
+  GATEWAY_PROXY_TARGETS:
+    env: GATEWAY_PROXY_TARGETS
+    default: "{}"
+    type: json
+  # Comma-separated hostnames a resolved proxy target's base URL must match
+  # (anti-SSRF guard, mirrors A2A_PUSH_WEBHOOK_ALLOWLIST). Optional — when
+  # unset, the gateway derives the allowlist from GATEWAY_PROXY_TARGETS'
+  # own hosts, so there's nothing to keep in sync by hand. Set this only to
+  # enforce a *narrower* list than the configured targets.
+  GATEWAY_PROXY_ALLOWLIST:
+    env: GATEWAY_PROXY_ALLOWLIST
+  GATEWAY_PROXY_TIMEOUT:
+    env: GATEWAY_PROXY_TIMEOUT
+    default: "30"
+    type: float

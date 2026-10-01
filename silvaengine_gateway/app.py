@@ -16,6 +16,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List
 
+import httpx
 from fastapi import FastAPI
 
 from .config import GatewayConfig
@@ -257,6 +258,33 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     # Create the WebSocket ConnectionManager (single-process MVP)
     connection_manager = ConnectionManager()
 
+    # Shared HTTP client for handler_type: "proxy" routes (silvaengine_gateway ->
+    # another silvaengine_gateway instance). One pooled client per app process,
+    # closed during lifespan shutdown below. Redirects are not followed
+    # automatically — a redirect across gateway instances should be explicit,
+    # not silently chased.
+    proxy_http_client = httpx.AsyncClient(follow_redirects=False)
+
+    # GATEWAY_PROXY_ALLOWLIST is optional: when unset, derive it from the
+    # hosts already present in GATEWAY_PROXY_TARGETS so operators don't have
+    # to keep two env vars in sync to add a remote gateway. Set it explicitly
+    # only to enforce a narrower list than the configured targets.
+    proxy_allowlist = [
+        h.strip()
+        for h in (setting.get("GATEWAY_PROXY_ALLOWLIST") or "").split(",")
+        if h.strip()
+    ]
+    if not proxy_allowlist:
+        proxy_targets_setting = setting.get("GATEWAY_PROXY_TARGETS") or {}
+        if isinstance(proxy_targets_setting, dict):
+            proxy_allowlist = sorted(
+                {
+                    httpx.URL(base_url).host
+                    for base_url in proxy_targets_setting.values()
+                    if base_url
+                }
+            )
+
     # Inject the ConnectionManager into module Config classes that support it
     # (e.g. ai_agent_core_engine.handlers.config:Config.set_connection_manager)
     for mod in manifest:
@@ -297,6 +325,9 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
 
         # Close active WebSocket connections
         await connection_manager.shutdown()
+
+        # Close the shared proxy HTTP client
+        await proxy_http_client.aclose()
 
         # Cleanup Cognito HTTP client if needed
         if GatewayConfig.auth_provider == "cognito":
@@ -437,6 +468,9 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
         auth_dependency=get_current_user,
         connection_manager=connection_manager,
         auth_provider=GatewayConfig.auth_provider,
+        http_client=proxy_http_client,
+        proxy_allowlist=proxy_allowlist,
+        setting=setting,
     )
     app.include_router(router)
 
