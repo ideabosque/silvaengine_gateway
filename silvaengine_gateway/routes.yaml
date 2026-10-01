@@ -4,7 +4,7 @@
 # (e.g. "package.module:dispatch_graphql"). The gateway resolves it
 # via importlib and wraps it with the appropriate handler factory.
 #
-# handler_type: graphql | rest | background | task_status | sse | websocket
+# handler_type: graphql | rest | background | task_status | sse | websocket | proxy
 # dispatch: "package.module:function_name"
 #
 # Paths carry only {endpoint_id}; the tenant partition id is supplied by the
@@ -99,3 +99,6 @@ modules:
 
   # ── Harness Engineering Engine ─────────────────────────────────────────
   - !include module_routes/harness_engineering_engine.yaml
+
+  # ── Remote Gateway Proxy (reverse-proxy to another gateway instance) ────
+  - !include module_routes/remote_gateway_proxy.yaml
