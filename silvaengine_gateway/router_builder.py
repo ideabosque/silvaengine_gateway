@@ -23,10 +23,11 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from .tasks.backend import generate_task_id, get_task_backend
@@ -49,7 +50,7 @@ class RouteSpec(BaseModel):
 
     path: str
     handler_type: str = (
-        "graphql"  # "graphql" | "rest" | "background" | "task_status" | "sse" | "websocket"
+        "graphql"  # "graphql" | "rest" | "background" | "task_status" | "sse" | "websocket" | "proxy"
     )
     dispatch: Optional[str] = None  # "knowledge_graph_engine.main:dispatch_graphql"
     methods: List[str] = Field(default_factory=lambda: ["POST"])
@@ -153,6 +154,23 @@ class ModuleSpec(BaseModel):
     sse_manager: Optional[str] = None
     # e.g. "mcp_daemon_engine.handlers.sse_manager:sse_manager"
 
+    # Reverse-proxy targets — used by handler_type: "proxy" routes to forward
+    # a request to another SilvaEngine Gateway instance instead of dispatching
+    # in-process. Keyed by the route's {target_id} path parameter, values are
+    # base URLs. Two forms:
+    #   - a single "{setting:KEY}" string pointing at one setting that holds
+    #     the whole target_id -> base_url map (recommended — see
+    #     GATEWAY_PROXY_TARGETS in settings.yaml, `type: json`). Adding or
+    #     removing a remote gateway is then a one-line env var change, no
+    #     YAML/code changes.
+    #   - a literal dict, optionally with per-value "{setting:KEY}"
+    #     indirection — kept for tests / small static deployments.
+    proxy_targets: Union[Dict[str, str], str] = Field(default_factory=dict)
+
+    # Per-module proxy request timeout in seconds. A literal number or a
+    # "{setting:KEY}" indirection (e.g. "{setting:GATEWAY_PROXY_TIMEOUT}").
+    proxy_timeout: Any = 30.0
+
 
 # ---------------------------------------------------------------------------
 # Dispatch resolution
@@ -206,6 +224,30 @@ def resolve_dispatch(dispatch_path: str) -> Callable:
     return _resolve_ref(dispatch_path, require_callable=True)
 
 
+def _resolve_setting_ref(value: Any, setting: Dict[str, Any]) -> Any:
+    """Resolve a ``"{setting:KEY}"`` indirection against *setting*.
+
+    A plain (non ``"{setting:...}"``) value is returned unchanged. A
+    ``"{setting:KEY}"`` reference resolves to ``setting.get(KEY)``, which is
+    ``None`` if that key was never set (no env var and no ``default:`` in
+    settings.yaml). Shared by ``config_overrides`` and ``proxy_targets``
+    resolution so both use identical indirection semantics.
+    """
+    if isinstance(value, str) and value.startswith("{setting:") and value.endswith("}"):
+        ref_key = value[len("{setting:"):-1]
+        return setting.get(ref_key)
+    return value
+
+
+def _resolve_timeout(value: Any, setting: Dict[str, Any], default: float = 30.0) -> float:
+    """Resolve a proxy_timeout value (literal or ``"{setting:KEY}"``) to a float."""
+    resolved = _resolve_setting_ref(value, setting)
+    try:
+        return float(resolved)
+    except (TypeError, ValueError):
+        return default
+
+
 def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
     """
     Validate the route manifest for common issues.
@@ -233,6 +275,12 @@ def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
                     f"Duplicate route path/methods '{route.path}' {route.methods} in module '{module.name}'"
                 )
             seen_paths.add(route_key)
+
+            if route.handler_type == "proxy" and not module.proxy_targets:
+                warnings.append(
+                    f"Module '{module.name}' route '{route.path}': "
+                    f"handler_type='proxy' but module has no proxy_targets configured"
+                )
 
             # Try to resolve the dispatch — log a warning if it fails
             # (websocket routes may omit dispatch)
@@ -649,6 +697,147 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
 
 
 # ---------------------------------------------------------------------------
+# Reverse-proxy route handler factory
+# ---------------------------------------------------------------------------
+
+# Headers that are connection-scoped, not application data — stripped in
+# both directions so the forwarded request/response don't carry stale
+# framing metadata from the wrong hop.
+_HOP_BY_HOP_HEADERS = {
+    "host",
+    "content-length",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _make_proxy_handler(
+    proxy_targets: Dict[str, str],
+    timeout: float,
+    client: httpx.AsyncClient,
+    allowlist: List[str],
+) -> Callable:
+    """Create a handler that reverse-proxies a request to another SilvaEngine
+    Gateway instance, selected by the route's ``{target_id}`` path parameter.
+
+    The remote instance receives a request indistinguishable from a direct
+    client call — same ``/{endpoint_id}/...`` path shape, headers (including
+    ``Authorization``, forwarded as-is), body, and query string.
+    ``target_id`` is local routing metadata only and is never forwarded.
+
+    Args:
+        proxy_targets: Resolved ``target_id -> base_url`` map (already run
+            through ``{setting:KEY}`` indirection).
+        timeout: Per-request timeout in seconds.
+        client: Shared ``httpx.AsyncClient`` (one per app, not per request).
+        allowlist: Hostnames a resolved ``base_url`` must match. Empty means
+            no allowlist is enforced.
+    """
+
+    async def handler(request: Request) -> Any:
+        target_id = request.path_params.get("target_id", "")
+        proxy_path = request.path_params.get("proxy_path", "")
+        endpoint_id = request.path_params.get("endpoint_id", "")
+
+        base_url = proxy_targets.get(target_id)
+        if not base_url:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown proxy target '{target_id}'"
+            )
+
+        host = httpx.URL(base_url).host
+        if allowlist and host not in allowlist:
+            logger.error(
+                "Proxy target '%s' (host '%s') is not in GATEWAY_PROXY_ALLOWLIST "
+                "— refusing to forward",
+                target_id,
+                host,
+            )
+            raise HTTPException(
+                status_code=502, detail="Proxy target host is not allowlisted"
+            )
+
+        upstream_url = f"{base_url.rstrip('/')}/{endpoint_id}/{proxy_path}"
+        if request.url.query:
+            upstream_url = f"{upstream_url}?{request.url.query}"
+
+        headers = {
+            k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS
+        }
+        body = await request.body()
+
+        logger.info(
+            ">> %s %s [proxy target=%s] -> %s",
+            request.method,
+            request.url.path,
+            target_id,
+            upstream_url,
+        )
+        started = time.perf_counter()
+
+        try:
+            upstream_request = client.build_request(
+                request.method, upstream_url, headers=headers, content=body, timeout=timeout
+            )
+            upstream_response = await client.send(upstream_request, stream=True)
+        except httpx.TimeoutException:
+            logger.error(
+                "Proxy timeout forwarding %s to %s", request.url.path, upstream_url
+            )
+            raise HTTPException(status_code=504, detail="Upstream gateway timed out")
+        except httpx.HTTPError as exc:
+            logger.error(
+                "Proxy error forwarding %s to %s: %s", request.url.path, upstream_url, exc
+            )
+            raise HTTPException(status_code=502, detail="Upstream gateway request failed")
+
+        logger.info(
+            "<< %s %s [proxy target=%s] %.0f ms status=%s",
+            request.method,
+            request.url.path,
+            target_id,
+            (time.perf_counter() - started) * 1000,
+            upstream_response.status_code,
+        )
+
+        response_headers = {
+            k: v
+            for k, v in upstream_response.headers.items()
+            if k.lower() not in _HOP_BY_HOP_HEADERS
+        }
+
+        async def body_iterator():
+            try:
+                # A response whose content was already fully materialized by
+                # the transport (e.g. httpx.MockTransport in tests, or any
+                # transport that doesn't truly stream) reports itself as
+                # already consumed — aiter_raw() would raise StreamConsumed.
+                # Real streaming transports leave it unconsumed here, so
+                # aiter_raw() does the actual incremental read.
+                if upstream_response.is_stream_consumed:
+                    yield upstream_response.content
+                else:
+                    async for chunk in upstream_response.aiter_raw():
+                        yield chunk
+            finally:
+                await upstream_response.aclose()
+
+        return StreamingResponse(
+            body_iterator(),
+            status_code=upstream_response.status_code,
+            headers=response_headers,
+        )
+
+    return handler
+
+
+# ---------------------------------------------------------------------------
 # WebSocket route handler factory
 # ---------------------------------------------------------------------------
 
@@ -1009,13 +1198,15 @@ def init_module_configs(
         # override value is always applied as given.
         if module.config_overrides:
             for override_key, override_val in module.config_overrides.items():
-                if isinstance(override_val, str) and override_val.startswith("{setting:") and override_val.endswith("}"):
-                    ref_key = override_val[len("{setting:"):-1]
-                    resolved_val = setting.get(ref_key)
-                    if resolved_val is None:
-                        continue
-                    override_val = resolved_val
-                module_setting[override_key] = override_val
+                is_ref = (
+                    isinstance(override_val, str)
+                    and override_val.startswith("{setting:")
+                    and override_val.endswith("}")
+                )
+                resolved_val = _resolve_setting_ref(override_val, setting)
+                if is_ref and resolved_val is None:
+                    continue
+                module_setting[override_key] = resolved_val
 
         if not module_setting:
             logger.debug(
@@ -1046,6 +1237,9 @@ def build_router_from_manifest(
     auth_dependency: Optional[Callable] = None,
     connection_manager: Any = None,
     auth_provider: str = "local",
+    http_client: Optional[httpx.AsyncClient] = None,
+    proxy_allowlist: Optional[List[str]] = None,
+    setting: Optional[Dict[str, Any]] = None,
 ) -> APIRouter:
     """
     Build a FastAPI APIRouter from the route manifest.
@@ -1061,6 +1255,7 @@ def build_router_from_manifest(
     - "task_status": _make_task_status_handler (polls task state)
     - "sse": _make_sse_handler (GET streaming via SSEManager)
     - "websocket": _make_websocket_handler (WebSocket with auth + ConnectionManager)
+    - "proxy": _make_proxy_handler (reverse-proxies to another gateway instance)
 
     Args:
         modules: List of ModuleSpec from the route manifest
@@ -1068,11 +1263,19 @@ def build_router_from_manifest(
         auth_dependency: Optional FastAPI dependency for auth enforcement (HTTP only)
         connection_manager: ConnectionManager instance for WebSocket routes
         auth_provider: "local" or "cognito" — selects the WebSocket JWT verifier
+        http_client: Shared httpx.AsyncClient used by "proxy" routes. Required
+            for any module that declares proxy_targets — a "proxy" route is
+            skipped with an error log if this is None.
+        proxy_allowlist: Hostnames a resolved proxy_targets base_url must
+            match (anti-SSRF guard). Empty/None means unenforced.
+        setting: The gateway setting dict, used to resolve "{setting:KEY}"
+            indirection in proxy_targets / proxy_timeout.
 
     Returns:
         APIRouter with all routes registered
     """
     router = APIRouter()
+    setting = setting or {}
 
     for module in modules:
         logger.info(f"Registering module: {module.name} (transport={module.transport})")
@@ -1086,6 +1289,44 @@ def build_router_from_manifest(
             elif handler_type == "sse":
                 # SSE routes — streaming via SSEManager, no dispatch needed
                 handler = _make_sse_handler(sse_manager_ref=module.sse_manager)
+            elif handler_type == "proxy":
+                # Reverse-proxy routes — no dispatch, forwards via shared HTTP client
+                if http_client is None:
+                    logger.error(
+                        f"Skipping proxy route {route.path} in {module.name}: "
+                        f"no shared HTTP client configured for proxying"
+                    )
+                    continue
+                targets_spec = module.proxy_targets
+                if isinstance(targets_spec, str):
+                    # Whole-map indirection: "{setting:GATEWAY_PROXY_TARGETS}"
+                    # resolves directly to a dict (settings.yaml parses it
+                    # with `type: json`).
+                    targets_spec = _resolve_setting_ref(targets_spec, setting) or {}
+                    if not isinstance(targets_spec, dict):
+                        logger.error(
+                            f"Module '{module.name}': proxy_targets reference "
+                            f"'{module.proxy_targets}' did not resolve to a map "
+                            f"(got {type(targets_spec).__name__}) — treating as empty"
+                        )
+                        targets_spec = {}
+                resolved_targets = {}
+                for target_id, base_url in targets_spec.items():
+                    resolved = _resolve_setting_ref(base_url, setting)
+                    if resolved:
+                        resolved_targets[target_id] = resolved
+                if not resolved_targets:
+                    logger.error(
+                        f"Skipping proxy route {route.path} in {module.name}: "
+                        f"proxy_targets resolved to no usable base URLs"
+                    )
+                    continue
+                handler = _make_proxy_handler(
+                    proxy_targets=resolved_targets,
+                    timeout=_resolve_timeout(module.proxy_timeout, setting),
+                    client=http_client,
+                    allowlist=proxy_allowlist or [],
+                )
             elif handler_type == "websocket":
                 # WebSocket routes — resolve dispatch if provided
                 ws_dispatch_fn = None

@@ -1,0 +1,27 @@
+# Remote Gateway Proxy — module manifest fragment
+# Included by routes.yaml via `!include module_routes/remote_gateway_proxy.yaml`
+#
+# Reverse-proxies a request to another SilvaEngine Gateway instance instead
+# of dispatching in-process. {target_id} selects which remote instance
+# receives the request, resolved against the GATEWAY_PROXY_TARGETS map
+# (settings.yaml); {endpoint_id} is forwarded unchanged so the remote
+# instance does its own tenant partitioning, exactly as it would for a
+# direct client call. See docs/gateway_proxy_plan.md.
+#
+# Adding a new remote target: add one key to the GATEWAY_PROXY_TARGETS env
+# var (JSON map), e.g.:
+#   GATEWAY_PROXY_TARGETS={"us":"https://us.example.com","eu":"https://eu.example.com"}
+# No settings.yaml, module_routes/*.yaml, or Python changes needed.
+
+name: remote_gateway_proxy
+package: remote_gateway_proxy
+transport: rest
+
+proxy_targets: "{setting:GATEWAY_PROXY_TARGETS}"
+proxy_timeout: "{setting:GATEWAY_PROXY_TIMEOUT}"
+
+routes:
+  - path: "/{endpoint_id}/remote/{target_id}/{proxy_path:path}"
+    handler_type: proxy
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+    auth: true
