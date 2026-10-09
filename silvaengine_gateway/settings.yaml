@@ -40,6 +40,19 @@ settings:
   jwt_secret_key:
     env: JWT_SECRET_KEY
     default: CHANGEME
+  # user_engine / perm_engine's authorizer read the shared signing secret
+  # under this key (their original silvaengine_base/Lambda contract,
+  # historically populated from a DynamoDB "se-configdata" settings table —
+  # see user_engine's security.py _get_jwt_secret() and perm_engine's
+  # authorizer.py _verify_jwt()). silvaengine_gateway never populated this
+  # key before, only its own jwt_secret_key, so JWT issuance in those
+  # modules failed with "jwt_secret not configured" when run under this
+  # gateway. Reuses JWT_SECRET_KEY's value by default (single secret,
+  # consistent with the gateway's own token signing); set JWT_SECRET
+  # explicitly to use a different value for this one.
+  jwt_secret:
+    env: [JWT_SECRET, JWT_SECRET_KEY]
+    default: CHANGEME
   jwt_algorithm:
     env: JWT_ALGORITHM
     default: HS256

@@ -7,8 +7,13 @@ transport: graphql
 config_class: "user_engine.handlers.config:Config"
 config_init_style: kwargs
 routes:
+  # auth: false — registerUser/login are designed for anonymous callers (a
+  # new user has no token yet). See app.py's FlexJWTMiddleware public_suffixes
+  # comment for why this is also a no-op for the route's other, identity-
+  # requiring operations (this gateway never forwards verified JWT claims
+  # into the GraphQL context here regardless of this flag).
   - path: "/{endpoint_id}/user_engine_graphql"
     handler_type: graphql
     dispatch: "user_engine.main:dispatch_graphql"
     methods: ["POST"]
-    auth: true
+    auth: false

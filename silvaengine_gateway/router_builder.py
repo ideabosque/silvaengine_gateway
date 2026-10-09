@@ -324,6 +324,110 @@ def _extract_partition_key(request: Request) -> tuple:
     return partition_key, endpoint_id, part_id
 
 
+def _user_claims_to_context_fields(user: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten decoded JWT claims into the flat context keys modules expect.
+
+    ``FlexJWTMiddleware`` decodes the Bearer token into ``request.state.user``
+    and handlers nest it under ``context["user"]`` — but the shared
+    ``silvaengine_utility.auth`` guards (``get_operator_id``/
+    ``require_operator_id``) and essentially every module's own resolvers
+    (merchant_engine, perm_engine, memory_engine, agent_engine, knowledge_engine,
+    capability_engine, llm_engine, ...) read flat top-level keys instead:
+    ``context["operator_id"]``/``["user_id"]``/``["tenant_id"]``/
+    ``["merchant_id"]``/``["username"]``/``["is_admin"]``. Without this, every
+    such resolver sees no operator identity regardless of a valid Bearer
+    token, and fails closed (e.g. "缺少操作者身份（operator_id），拒绝查询商户数据").
+
+    ``merchant_id`` is derived as ``merchant_ids[0]`` — the active-merchant
+    convention used by ``issue_access_token``/``PermAuthorizer`` (first entry
+    of the token's ``merchant_ids`` claim is the currently active merchant).
+    ``is_admin`` also recognizes this gateway's own local admin tokens
+    (``create_local_jwt``), which carry ``role: "admin"`` / ``perm: true``
+    instead of ``sub``/``tenant_id``.
+    """
+    user_id = user.get("sub") or user.get("username")
+    merchant_ids = user.get("merchant_ids") or []
+    fields: Dict[str, Any] = {}
+    if user_id:
+        fields["user_id"] = user_id
+        fields["operator_id"] = user_id
+    if user.get("username"):
+        fields["username"] = user["username"]
+    if user.get("tenant_id"):
+        fields["tenant_id"] = user["tenant_id"]
+    if merchant_ids:
+        fields["merchant_ids"] = merchant_ids
+        fields["merchant_id"] = merchant_ids[0]
+    if user.get("role") == "admin" or user.get("perm") is True:
+        fields["is_admin"] = True
+    return fields
+
+
+def _resolve_user_roles(user_id: str) -> List[Dict[str, Any]]:
+    """Resolve a user's role records for ``context["roles"]`` (best-effort).
+
+    Many modules' platform-scope guards (monitor_engine, setting_engine,
+    capability_engine, knowledge_engine, agent_engine, orchestration_engine,
+    memory_engine, llm_engine, perm_engine itself, ...) read
+    ``info.context["roles"]`` as ``[{"role_id":..., "name":..., "tenant_id":...}]``
+    — a contract originally fulfilled by ``silvaengine_base``'s
+    ``PermAuthorizer._load_user_roles`` (direct roles ∪ user-group roles,
+    see that method's docstring/implementation in
+    ``perm_engine.authorizer.PermAuthorizer``), which this gateway never
+    replicated. Without it every such guard sees an empty role list and
+    fails closed for *any* user, including genuine platform admins — not
+    real authorization, just an always-closed gate.
+
+    Lazily imports perm_engine (optional dependency — a gateway deployment
+    without it simply gets no roles, same as today) and mirrors that same
+    query shape exactly. Any failure (perm_engine absent, DB unavailable,
+    ...) degrades to an empty list rather than raising, consistent with the
+    existing "no roles -> fail closed" semantics downstream.
+    """
+    try:
+        from perm_engine.models.group_role import GroupRoleRepository
+        from perm_engine.models.role import RoleRepository
+        from perm_engine.models.user_group_member import (
+            UserGroupMemberRepository,
+        )
+        from perm_engine.models.user_role import UserRoleRepository
+
+        roles: List[Dict[str, Any]] = []
+
+        user_roles = UserRoleRepository.find_by_user(user_id)
+        direct_role_ids = [str(ur.get("role_id")) for ur in user_roles]
+        for role_id in direct_role_ids:
+            role = RoleRepository.find_by_id(role_id)
+            if role:
+                roles.append(role)
+
+        group_memberships = UserGroupMemberRepository.find_by_user(user_id)
+        group_ids = [str(gm.get("group_id")) for gm in group_memberships]
+        all_group_role_ids: List[str] = []
+        for gid in group_ids:
+            group_roles = GroupRoleRepository.find_by_group(gid)
+            all_group_role_ids.extend(str(gr.get("role_id")) for gr in group_roles)
+
+        for role_id in all_group_role_ids:
+            if role_id in direct_role_ids:
+                continue
+            role = RoleRepository.find_by_id(role_id)
+            if role:
+                roles.append(role)
+
+        return [
+            {
+                "role_id": str(r.get("id", "")),
+                "name": str(r.get("name", "")),
+                "tenant_id": str(r.get("tenant_id")) if r.get("tenant_id") else None,
+            }
+            for r in roles
+        ]
+    except Exception as exc:
+        logger.debug("Role resolution skipped for user %s: %s", user_id, exc)
+        return []
+
+
 def _dispatch_label(params: Dict[str, Any]) -> str:
     """Human-readable summary of a dispatch payload for request logging.
 
@@ -382,6 +486,12 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
         user = getattr(request.state, "user", None)
         if user:
             params["context"]["user"] = user
+            fields = _user_claims_to_context_fields(user)
+            if fields.get("user_id"):
+                fields["roles"] = await asyncio.get_running_loop().run_in_executor(
+                    _executor, _resolve_user_roles, fields["user_id"]
+                )
+            params["context"].update(fields)
 
         # Forward request headers so a dispatch can read transport-level
         # metadata that has no place in the payload — an Idempotency-Key is
@@ -484,6 +594,12 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
         user = getattr(request.state, "user", None)
         if user:
             params["context"]["user"] = user
+            fields = _user_claims_to_context_fields(user)
+            if fields.get("user_id"):
+                fields["roles"] = await asyncio.get_running_loop().run_in_executor(
+                    _executor, _resolve_user_roles, fields["user_id"]
+                )
+            params["context"].update(fields)
 
         params["headers"] = {k.lower(): v for k, v in request.headers.items()}
 
@@ -1024,6 +1140,13 @@ def _make_websocket_handler(
                 params["context"]["endpoint_id"] = endpoint_id
                 params["context"]["connection_id"] = connection_id
                 params["context"]["user"] = user
+                if user:
+                    ws_fields = _user_claims_to_context_fields(user)
+                    if ws_fields.get("user_id"):
+                        ws_fields["roles"] = await asyncio.get_running_loop().run_in_executor(
+                            _executor, _resolve_user_roles, ws_fields["user_id"]
+                        )
+                    params["context"].update(ws_fields)
                 params["partition_key"] = partition_key
                 params["endpoint_id"] = endpoint_id
                 params["part_id"] = part_id

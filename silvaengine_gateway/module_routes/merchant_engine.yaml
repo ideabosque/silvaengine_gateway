@@ -7,8 +7,16 @@ transport: graphql
 config_class: "merchant_engine.handlers.config:Config"
 config_init_style: kwargs
 routes:
+  # auth: false — the self-service merchant Signup mutation is explicitly
+  # designed for anonymous callers (a brand-new merchant/admin has no token
+  # yet — see Signup.mutate's "自助注册流程允许匿名调用", operator_id falls
+  # back to ZERO_UUID). Same rationale as user_engine_graphql's auth: false
+  # (see that file's comment and app.py's FlexJWTMiddleware public_suffixes
+  # comment): this gateway never forwards verified JWT claims into the
+  # GraphQL context here, so gating this route blocks anonymous signup
+  # without making any other merchant_engine operation more secure.
   - path: "/{endpoint_id}/merchant_engine_graphql"
     handler_type: graphql
     dispatch: "merchant_engine.main:dispatch_graphql"
     methods: ["POST"]
-    auth: true
+    auth: false

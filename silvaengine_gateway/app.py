@@ -385,12 +385,32 @@ def create_app(setting: Dict[str, Any] = None) -> FastAPI:
     # to be reachable WITHOUT authentication so clients can discover agents.
     # The middleware matches public paths by exact/segment prefix; the agent
     # card path is matched by suffix below.
+    #
+    # /user_engine_graphql is also public: user_engine's own registerUser/login
+    # mutations are explicitly designed for anonymous callers (a brand-new user
+    # has no token yet — see RegisterUser.mutate's "注册流程允许匿名调用"), and
+    # this gateway never forwards verified JWT claims into the GraphQL context
+    # for user_engine's queries/mutations to read in the first place (no
+    # user_id/operator_id/tenant_id wiring exists here), so gating this route
+    # on a Bearer token blocks anonymous registration without making any other
+    # user_engine operation more secure. user_engine's own resolvers already
+    # fail closed on missing identity (require_operator_id / UserAccessDeniedError)
+    # for anything that actually needs one.
+    #
+    # /merchant_engine_graphql is public for the same reason: its self-service
+    # Signup mutation is explicitly anonymous-callable (operator_id falls back
+    # to ZERO_UUID — see Signup.mutate's "自助注册流程允许匿名调用"), and this
+    # is the actual mutation the b2b-agent-builder registration UI calls.
     from .auth.middleware import FlexJWTMiddleware
 
     app.add_middleware(
         FlexJWTMiddleware,
         public_paths=["/health", "/auth"],
-        public_suffixes=["/.well-known/agent-card.json"],
+        public_suffixes=[
+            "/.well-known/agent-card.json",
+            "/user_engine_graphql",
+            "/merchant_engine_graphql",
+        ],
     )
 
     # CORS — added LAST so it is the OUTERMOST middleware (see note above).

@@ -51,15 +51,27 @@ class FlexJWTMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
 
-        if self._is_public(request.url.path):
-            return await call_next(request)
+        is_public = self._is_public(request.url.path)
 
         auth = request.headers.get("authorization")
-        if not (auth and auth.lower().startswith("bearer ")):
+        has_bearer = bool(auth and auth.lower().startswith("bearer "))
+
+        if not has_bearer:
+            if is_public:
+                return await call_next(request)
             return JSONResponse(
                 status_code=401, content={"detail": "Not authenticated"}
             )
 
+        # A Bearer token is present — decode it regardless of whether the
+        # route is public. public_suffixes/public_paths only mean "don't
+        # *require* a token" (e.g. merchant_engine's/user_engine's anonymous
+        # Signup/registerUser mutations share their route with every other,
+        # identity-requiring operation on that same module). Skipping
+        # decoding here left request.state.user permanently unset for every
+        # call to such a route, so authenticated requests to it silently
+        # never got operator_id/tenant_id — failing closed with "缺少操作者
+        # 身份" regardless of a valid token.
         token = auth.split(" ", 1)[1]
         mode = GatewayConfig.auth_provider
 
@@ -70,6 +82,11 @@ class FlexJWTMiddleware(BaseHTTPMiddleware):
                 claims = verify_local_jwt(token)
             request.state.user = claims
         except HTTPException as e:
+            if is_public:
+                # An invalid/expired token on a route that also serves
+                # anonymous callers shouldn't block the request — proceed
+                # without identity rather than rejecting outright.
+                return await call_next(request)
             return JSONResponse(
                 status_code=e.status_code,
                 content={"detail": e.detail},
