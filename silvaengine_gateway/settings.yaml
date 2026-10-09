@@ -40,6 +40,15 @@ settings:
   jwt_secret_key:
     env: JWT_SECRET_KEY
     default: CHANGEME
+  # Banyan: perm_engine.authorizer.PermAuthorizer (BanyanAuthorizerBridge)
+  # and user_engine/perm_engine's own Config read the shared signing secret
+  # under this key — in production it comes from the se-configdata DDB
+  # overlay; local/non-DDB deployments need it declared here too. Reuses
+  # JWT_SECRET_KEY's value by default (single secret); set JWT_SECRET
+  # explicitly for a different value.
+  jwt_secret:
+    env: [JWT_SECRET, JWT_SECRET_KEY]
+    default: CHANGEME
   jwt_algorithm:
     env: JWT_ALGORITHM
     default: HS256
