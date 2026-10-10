@@ -1,0 +1,187 @@
+# =============================================================================
+# SilvaEngine Gateway — Banyan 生产数据面（P0 最小交付，无 nginx）
+#
+#   cd deploy && cp <env 块见 README §2> .env && docker compose up -d
+#
+# 架构：浏览器/前端 → gateway（FastAPI 单容器，12 引擎进程内分发）→
+#   postgres / neo4j / redis；se-configdata 配置默认读真实云端 DynamoDB
+#   （启动时一次性读取，只读），DynamoDB Local 为可选变体（见文件末尾）。
+#
+# 网关镜像要求（P1 由 docker-silvaengine-gateway 仓构建交付）：
+#   镜像必须同时包含网关与 Banyan 运行面 —— silvaengine_gateway 包 +
+#   框架（silvaengine_base / silvaengine_utility / silvaengine_connections /
+#   silvaengine_dynamodb_base）+ 12 业务引擎，PYTHONPATH 采用 api-runtime
+#   已验证的布局：/app/vendor:/app:/app/modules/<12 引擎仓根>。
+#   缺失任一路径条目时对应引擎 import 失败 → 鉴权层 Permission denied →
+#   全量 403（与 api-runtime 踩过的坑一致，务必全量打入）。
+#
+# 所有服务统一 json-file 日志轮转（10MB × 3）；启动顺序由
+# depends_on + healthcheck 强制保障。
+# =============================================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  gateway:
+    # 扩展镜像（见文件头说明）。GATEWAY_IMAGE 在 .env 中指定，
+    # 例如 docker-silvaengine-gateway 仓构建出的 banyan 网关镜像。
+    image: ${GATEWAY_IMAGE:?set GATEWAY_IMAGE in .env}
+    container_name: silvaengine-gateway
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      # Banyan 托管开关（网关内置 Banyan 托管）：
+      #   SETTING_SOURCE=se-configdata → setting 启动时叠加 DDB 记录（DDB 键优先）
+      #   ENDPOINT_ID=banyan           → 挂载路径规范化 + PermAuthorizer 鉴权桥
+      - SETTING_SOURCE=se-configdata
+      - ENDPOINT_ID=${ENDPOINT_ID:-banyan}
+      - ADAPTER_STAGE=${ADAPTER_STAGE:-beta}
+      - ADAPTER_AREA=${ADAPTER_AREA:-core}
+      # 跨引擎 httpx 池回环：容器内引擎互调绕开云端 API-GW，走本网关
+      # （鉴权桥验证引擎服务令牌，与前端调用同一代码路径）。
+      # base_url 会被启动时改写为该值；引擎对上游 LLM 的调用传绝对 URL 不受影响。
+      - BANYAN_LOOPBACK_BASE_URL=${BANYAN_LOOPBACK_BASE_URL:-http://127.0.0.1:8000/beta/core/banyan}
+      - SE_CONFIGDATA_TABLE=${SE_CONFIGDATA_TABLE:-se-configdata}
+      # DDB Local 变体启用时在 .env 里设置 SE_CONFIGDATA_ENDPOINT_URL 即可透传
+      - SE_CONFIGDATA_ENDPOINT_URL=${SE_CONFIGDATA_ENDPOINT_URL:-}
+    command:
+      - uvicorn
+      - silvaengine_gateway.app:create_app_from_env
+      - --factory
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # 在途 GraphQL 请求可达数十秒；重启/拉取时给足排空宽限
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5); sys.exit(0 if r.status==200 else 1)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    logging: *default-logging
+
+  postgres:
+    # 关系型/日志型数据统一存储（12 引擎共用；审计/遥测池同实例分库或同库）
+    image: ${DOCKER_MIRROR_PREFIX:-docker.1ms.run/library/}postgres:16
+    container_name: silvaengine-gateway-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:?set POSTGRES_USER in .env}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - POSTGRES_DB=${POSTGRES_DB:?set POSTGRES_DB in .env}
+    volumes:
+      - gateway-pg-data:/var/lib/postgresql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  neo4j:
+    # 图数据与向量数据唯一存储（知识图谱实体/关系、记忆关联边、embedding 向量）
+    image: ${DOCKER_MIRROR_PREFIX:-docker.1ms.run/library/}neo4j:5.26-ubi10
+    container_name: silvaengine-gateway-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=${NEO4J_AUTH:?set NEO4J_AUTH in .env}
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+      # 显式 pagecache 上限（默认可达宿主 RAM 50%，小内存机器有 OOM 隐患）
+      - NEO4J_server_memory_pagecache_size=256m
+    volumes:
+      - gateway-neo4j-data:/data
+      - gateway-neo4j-logs:/logs
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      # 镜像内无 wget/curl；bash /dev/tcp 探测 bolt 端口（api-runtime 已验证可行）
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/7687'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    logging: *default-logging
+
+  redis:
+    # 短时令牌/验证码/MFA 会话等瞬态数据；AOF 持久化
+    image: ${DOCKER_MIRROR_PREFIX:-docker.1ms.run/library/}redis:7
+    container_name: silvaengine-gateway-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env} --appendonly yes
+    environment:
+      # redis-cli 原生读取 REDISCLI_AUTH —— healthcheck 免密 ping
+      - REDISCLI_AUTH=${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    volumes:
+      - gateway-redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # 可选变体：DynamoDB Local（完全离线运行，se-configdata 用本地表）
+  #
+  # 启用步骤：
+  #   1. 取消下方服务注释，`docker compose up -d ddb-local`
+  #   2. 用真实/种子记录灌表：
+  #      python scripts/seed_seconfig.py --file env/se-configdata.local.json \
+  #          --endpoint-url http://127.0.0.1:8001 --apply
+  #   3. 在 .env 中设置：SE_CONFIGDATA_ENDPOINT_URL=http://ddb-local:8000
+  #      （容器内互通用服务名 ddb-local，宿主机灌表用 127.0.0.1:8001）
+  #   4. 重启 gateway 使 setting 重新加载
+  # 注：amazon/dynamodb-local 非 Docker Hub official 镜像，镜像加速路径不含
+  # library/ 段，不适用 DOCKER_MIRROR_PREFIX。
+  # ---------------------------------------------------------------------------
+  # ddb-local:
+  #   image: amazon/dynamodb-local:latest
+  #   container_name: silvaengine-gateway-ddb-local
+  #   ports:
+  #     - "8001:8000"
+  #   command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+  #   restart: unless-stopped
+  #   logging: *default-logging
+
+volumes:
+  gateway-pg-data:
+    name: silvaengine-gateway_pg-data
+  gateway-neo4j-data:
+    name: silvaengine-gateway_neo4j-data
+  gateway-neo4j-logs:
+    name: silvaengine-gateway_neo4j-logs
+  gateway-redis-data:
+    name: silvaengine-gateway_redis-data

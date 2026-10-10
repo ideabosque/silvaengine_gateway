@@ -1,0 +1,100 @@
+# =============================================================================
+# SilvaEngine Gateway — bind-mount Overlay 变体（P0 容器验收，免镜像构建）
+#
+# 用法（需 Docker Compose v2 —— environment / healthcheck 按映射逐键合并，
+# base 的 SETTING_SOURCE / ENDPOINT_ID / AWS 凭据注入 / depends_on 等全部继承）：
+#
+#   cd deploy && docker compose -f docker-compose.yml \
+#       -f docker-compose.bindmount.yml up -d
+#
+# 与生产镜像变体（单文件 docker-compose.yml）的差异，仅 gateway 服务：
+#   - image 覆写为纯 python:3.12-slim —— 无 build、不要求网关镜像存在；
+#   - 运行面全部经 bind-mount 注入（源文件修改后容器重启即生效，
+#     与 api-runtime 服务器部署模式一致）：
+#       网关包            → /app/silvaengine_gateway
+#       banyan 12 引擎    → /app/modules
+#       vendor 框架快照   → /app/vendor        (constants/definitions/dynamodb_base)
+#       三框架仓          → /app/silvaengine_{base,utility,connections}
+#   - 启动时 pip install requirements-bindmount.txt 后 exec uvicorn --factory。
+#
+# 挂载点全部平铺在 /app（容器 rootfs 目录）之下，互不嵌套 —— 嵌套 bind-mount
+# 会在宿主机 bind 源内创建挂载点目录，污染源仓（git status 出现垃圾目录）。
+#
+# .env 增补（§7.1）：GATEWAY_IMAGE 须给占位值 —— base 文件里的
+# ${GATEWAY_IMAGE:?} 守卫在 Overlay 模式下仍会插值求值（image 虽被覆写，
+# 变量仍必须存在）；路径变量见 volumes 段 :? 守卫，缺一即报错。
+# =============================================================================
+
+services:
+  gateway:
+    # 纯基础镜像起步：代码与依赖经挂载注入，无 build 段 —— 任何 compose
+    # 操作都不触发构建，也无需网关镜像存在（生产交付物是 P1 镜像）。
+    image: ${DOCKER_MIRROR_PREFIX:-docker.1ms.run/library/}python:3.12-slim
+    environment:
+      # 模块搜索路径（与 api-runtime 已验证布局一致）：
+      #   /app/vendor            → silvaengine_constants / silvaengine_definitions /
+      #                            silvaengine_dynamodb_base 快照包
+      #   /app                   → silvaengine_gateway 包 + /app/silvaengine_<框架>
+      #                            （包目录布局时直接命中）
+      #   /app/modules/<repo>    → 12 引擎仓根（双层 modules/<repo>/<repo>/，
+      #                            Invoker.resolve_proxied_callable 做普通
+      #                            import_module，与 Lambda 包根导入对齐）
+      # 缺失任一路径条目 → 对应引擎 import 失败 → 鉴权层 Permission denied
+      # → 全量 403（api-runtime 踩坑在案，务必全量列入）。
+      PYTHONPATH: /app/vendor:/app:/app/modules/agent_engine:/app/modules/capability_engine:/app/modules/knowledge_engine:/app/modules/llm_engine:/app/modules/memory_engine:/app/modules/merchant_engine:/app/modules/monitor_engine:/app/modules/orchestration_engine:/app/modules/perm_engine:/app/modules/prompt_engine:/app/modules/setting_engine:/app/modules/user_engine
+      # pip 镜像源与去噪（国内环境默认阿里云，可在 .env 覆盖）
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      # se-* 配置表 TTL 缓存（引擎经框架读配置时生效；0 禁用，
+      # SILVAENGINE_CACHE_ENABLED=false 紧急回退直查）
+      SILVAENGINE_CACHE_TTL: ${SILVAENGINE_CACHE_TTL:-300}
+    volumes:
+      # 网关包目录（仓根下的 silvaengine_gateway/）→ /app/silvaengine_gateway
+      - ${GATEWAY_PACKAGE_DIR:?set GATEWAY_PACKAGE_DIR in .env}:/app/silvaengine_gateway:ro
+      # Banyan 12 业务引擎（双层 modules/<repo>/<repo>/ 布局）
+      - ${BANYAN_MODULES_DIR:?set BANYAN_MODULES_DIR in .env}:/app/modules:ro
+      # 无独立 repo 供给约定的框架包快照（api-runtime 已验证形态）：
+      # silvaengine_constants / silvaengine_definitions / silvaengine_dynamodb_base
+      - ${VENDOR_DIR:?set VENDOR_DIR in .env}:/app/vendor:ro
+      # 框架仓（repo 根或包目录布局均可，command 探测脚本自动适配）
+      - ${SILVAENGINE_BASE_DIR:?set SILVAENGINE_BASE_DIR in .env}:/app/silvaengine_base:ro
+      - ${SILVAENGINE_UTILITY_DIR:?set SILVAENGINE_UTILITY_DIR in .env}:/app/silvaengine_utility:ro
+      - ${SILVAENGINE_CONNECTIONS_DIR:?set SILVAENGINE_CONNECTIONS_DIR in .env}:/app/silvaengine_connections:ro
+      # 运行面依赖清单（启动时 pip 安装；与 P1 镜像共用同一来源）
+      - ./requirements-bindmount.txt:/tmp/requirements.txt:ro
+      # pip 下载缓存（跨重启复用，加速二次启动）
+      - gateway-pip-cache:/root/.cache/pip
+    # exec 让 python(uvicorn) 成为 PID 1，可正常接收 SIGTERM 优雅退出。
+    # 框架包布局自适应（SILVAENGINE_* 两种合法布局，逐包独立探测，逻辑与
+    # api-runtime compose 逐字一致）：
+    #   ① 包目录布局 —— 挂载源即包目录（/app/<pkg>/__init__.py 存在）：
+    #     经既有 /app 路径条目解析，无需追加；
+    #   ② repo 根布局 —— 挂载源为 repo 根（/app/<pkg>/<pkg>/__init__.py
+    #     存在）：把 /app/<pkg> 追加进 PYTHONPATH，使 `import <pkg>` 命中
+    #     同名常规包（常规包跨路径条目恒优先于命名空间包），绕开「repo
+    #     根被解析为命名空间包 → .resources 等子模块 ModuleNotFound →
+    #     全量 500」陷阱；repo 根仅暴露 <pkg>/ 与 setup.py/tests 等元数据
+    #     （与 12 引擎的 /app/modules/<repo> 路径条目同模式）。
+    #     不能反向为之 —— 把 /app/<pkg> 无条件写死进 PYTHONPATH 在包目录
+    #     布局下会把包内部模块提升为顶层名，遮蔽 stdlib 与三方库。
+    command:
+      - bash
+      - -c
+      - |
+        # 注：双美元符为 compose 插值转义，容器内 bash 收到的是单美元符变量
+        for p in silvaengine_base silvaengine_utility silvaengine_connections; do
+          if [ -f "/app/$$p/$$p/__init__.py" ]; then
+            export PYTHONPATH="$$PYTHONPATH:/app/$$p"
+            echo "[entrypoint] $$p: repo-root layout detected, PYTHONPATH += /app/$$p"
+          fi
+        done
+        pip install -r /tmp/requirements.txt && exec uvicorn silvaengine_gateway.app:create_app_from_env --factory --host 0.0.0.0 --port 8000
+    # 首次启动 pip 全量安装需数分钟 —— 仅覆写启动宽限，
+    # test / interval / timeout / retries 继承 base。
+    healthcheck:
+      start_period: 300s
+
+# pip 下载缓存卷（与 base 顶层卷合并共存；显式 name 不随项目名漂移）
+volumes:
+  gateway-pip-cache:
+    name: silvaengine-gateway_pip-cache

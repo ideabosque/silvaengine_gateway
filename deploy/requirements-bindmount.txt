@@ -1,0 +1,83 @@
+# =============================================================================
+# SilvaEngine Gateway (Banyan) — 运行面依赖单一来源
+#
+# 组成（两部分）：
+#   ① Banyan 运行面实战并集 —— 逐字取自 docker/api-runtime/requirements.txt
+#      （12 引擎 + 框架依赖，已在生产容器链验证）；
+#   ② 网关增量 —— silvaengine_gateway/pyproject.toml dependencies 对照 ①
+#      逐项补缺（①已覆盖的 httpx / pendulum / boto3 / pydantic(fastapi 自带)
+#      不重复列出）。
+#
+# 消费方（单一来源，两处使用）：
+#   - deploy/docker-compose.bindmount.yml —— 启动时 pip install 本文件；
+#   - P1 docker-silvaengine-gateway 镜像构建 —— COPY 本文件后 pip install。
+#
+# 排除决策（与 api-runtime 收敛规则一致）：
+#   - minio / pymilvus / alembic / pandas / numpy / matplotlib —— 见 ① 原文注释；
+#   - pyproject.toml 中的 knowledge_graph_engine 等内部依赖为非 PyPI 包，
+#     由挂载（bind-mount 变体）或 COPY（P1 镜像）+ PYTHONPATH 供给，
+#     绝不经 pip 安装。
+# =============================================================================
+
+# --- ① Banyan 运行面（逐字取自 api-runtime requirements.txt）---
+#
+# Collected from the authoritative sources:
+#   - modules/*/pyproject.toml            (12 engine modules)
+#   - silvaengine_utility/pyproject.toml  (framework utility)
+#   - silvaengine_connections/pyproject.toml
+#   - silvaengine_base/setup.py           (requires silvaengine_utility)
+#   - venv METADATA: silvaengine_dynamodb_base (tenacity, pynamodb, deepdiff)
+#
+# Excluded per project decisions (convergence rule):
+#   - minio      (lazy import in knowledge_engine; not installed)
+#   - pymilvus   (Milvus not used; vectors live in Neo4j)
+#   - alembic    (migrations are run outside the request path)
+#   - pandas/numpy/matplotlib (not imported by any module)
+
+# --- AWS / framework core ---
+boto3>=1.34,<2
+botocore>=1.34,<2
+pynamodb==6.1.0
+tenacity>=8.2
+deepdiff>=6.0
+
+# --- Database drivers / ORM ---
+sqlalchemy>=2.0,<3
+psycopg[binary]>=3.1
+psycopg2-binary>=2.9
+neo4j==5.28.1          # matches the banyan_silvaengine_microcore Lambda layer
+redis>=5.0,<9
+
+# --- GraphQL ---
+graphene==3.4.3
+graphql-core>=3.2,<3.3
+graphql-relay>=3.2,<3.3
+promise==2.3           # imported directly by silvaengine_definitions
+
+# --- Serialization / dates / HTTP ---
+orjson>=3.9
+pendulum>=3.0
+requests>=2.31
+python-dateutil>=2.8
+httpx>=0.27
+
+# --- Engine-module dependencies (auth, MFA, crypto) ---
+PyJWT>=2.8
+pyotp>=2.9
+argon2-cffi>=23.1
+fido2>=1.1
+cryptography>=42.0
+
+# --- ② 网关增量（pyproject.toml 对照补缺）---
+# FastAPI stack（uvicorn 下界对齐 --factory 选项：0.29 起稳定）
+fastapi>=0.104.0
+uvicorn[standard]>=0.29
+# Auth（routes/auth.py OAuth2PasswordRequestForm → python-multipart；
+# auth/users.py CryptContext bcrypt → passlib[bcrypt]）
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.9
+# Config（manifest.py / setting_builder.py import yaml；
+# app.py create_app_from_env —— uvicorn --factory 入口 —— import dotenv）
+pyyaml>=6.0
+python-dotenv>=1.0.0
