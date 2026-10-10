@@ -34,7 +34,17 @@ def verify_local_jwt(token: str) -> Dict[str, Any]:
             token,
             GatewayConfig.jwt_secret_key,
             algorithms=[GatewayConfig.jwt_algorithm],
-            options={"verify_exp": False},
+            # verify_aud=False: this verifier only checks signature (+ exp,
+            # manually below) — it has no configured expected audience.
+            # python-jose (like PyJWT) rejects ANY token carrying an `aud`
+            # claim unless the caller passes a matching `audience=`, even
+            # with verify_exp disabled. Cross-engine service tokens (see
+            # */utils/service_token.py's R6b payload convention) always set
+            # `aud`, so without this they 401 here even with a valid
+            # signature — real Banyan-routed calls are unaffected since
+            # perm_engine.PermAuthorizer._verify_jwt passes a real
+            # audience/issuer pair and validates it properly.
+            options={"verify_exp": False, "verify_aud": False},
         )
         if not claims.get("perm"):
             if (

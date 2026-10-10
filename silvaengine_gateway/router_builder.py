@@ -84,6 +84,24 @@ class ModuleSpec(BaseModel):
     name: str
     package: str  # e.g. "knowledge_graph_engine"
     transport: str = "graphql"  # "graphql" | "rest" | "hybrid"
+
+    auth_bridge: Optional[str] = None
+    # Selects the AUTH MECHANISM for every route in this module, regardless
+    # of which tenant/endpoint_id appears in the URL — not tied to any one
+    # bridge implementation: the value is a label (e.g. "banyan") that
+    # app.py::_AUTH_BRIDGES maps to a concrete middleware class (resolved
+    # via resolve_dispatch, same "package.module:Class" convention as
+    # config_class/on_startup/etc.). route_templates_for_auth_bridge() below
+    # only extracts the path templates for a given label — the label→class
+    # mapping itself lives in app.py, not here. Unset (default) leaves the
+    # module on the gateway's own lighter FlexJWTMiddleware (signature-only,
+    # no DB role lookup). Currently only "banyan" is registered (→
+    # BanyanAuthorizerBridge, real perm_engine.PermAuthorizer — Postgres-
+    # backed role lookup per request), but neither this field nor the
+    # registry hardcode that. Orthogonal to RouteSpec.auth, which only
+    # toggles whether FastAPI attaches Depends(get_current_user) to a
+    # route — it doesn't select which middleware authenticates it.
+
     routes: List[RouteSpec] = Field(default_factory=list)
     config: Dict[str, Any] = Field(default_factory=dict)
     invoker_class_name: Optional[str] = None
@@ -204,6 +222,30 @@ def resolve_dispatch(dispatch_path: str) -> Callable:
         "knowledge_graph_engine.handlers.extraction.handler:dispatch_extract"
     """
     return _resolve_ref(dispatch_path, require_callable=True)
+
+
+def route_templates_for_auth_bridge(
+    manifest: List[ModuleSpec], bridge: str
+) -> List[List[str]]:
+    """Path-template segments for every route whose module opted into the
+    given ``auth_bridge`` label (e.g. ``"banyan"``), for a bridge
+    middleware's own lightweight per-request path matching (such middleware
+    runs before FastAPI's own router resolves a match, so it can't rely on
+    normal route resolution).
+
+    Each ``route.path`` (e.g. ``"/{endpoint_id}/capability_engine_graphql"``)
+    is split on ``"/"``; the result is a list of segment-lists where any
+    ``"{...}"`` segment (``{endpoint_id}``, ``{task_id}``, ...) is a
+    wildcard — matched positionally, never compared literally, so
+    endpoint_id/part_id are read from the actual request (path/``Part-Id``
+    header) at auth time, never baked in as a fixed constructor value.
+    """
+    return [
+        [seg for seg in route.path.split("/") if seg]
+        for mod in manifest
+        if mod.auth_bridge == bridge
+        for route in mod.routes
+    ]
 
 
 def validate_manifest(modules: List[ModuleSpec]) -> List[str]:

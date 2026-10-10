@@ -4,6 +4,7 @@
 name: llm_engine
 package: llm_engine
 transport: graphql
+auth_bridge: banyan  # always goes through real PermAuthorizer, any tenant
 config_class: "llm_engine.handlers.config:Config"
 config_init_style: kwargs
 routes:

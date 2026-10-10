@@ -4,6 +4,7 @@
 name: agent_engine
 package: agent_engine
 transport: graphql
+auth_bridge: banyan  # always goes through real PermAuthorizer, any tenant
 config_class: "agent_engine.handlers.config:Config"
 config_init_style: kwargs
 routes:

@@ -177,11 +177,22 @@ def _load_perm_components() -> Tuple[Type[Any], Type[PermissionError]]:
 
 
 class BanyanAuthorizerBridge(BaseHTTPMiddleware):
-    """Authenticate Banyan-domain requests via perm_engine.PermAuthorizer."""
+    """Authenticate requests to auth_bridge="banyan" modules via
+    perm_engine.PermAuthorizer — selected per MODULE (route manifest), not
+    per tenant: ``route_templates`` is a fixed set of path templates built
+    once at startup from ``ModuleSpec.auth_bridge`` (see
+    router_builder.route_templates_for_auth_bridge / app.py::_AUTH_BRIDGES),
+    never a single endpoint_id. endpoint_id/part_id are never passed in as
+    fixed constructor values — PermAuthorizer reads them per-request from
+    the proxy event's own ``path``/``headers["Part-Id"]``, exactly like
+    every other tenant-aware call in this gateway.
+    """
 
-    def __init__(self, app, endpoint_id: str, setting: Dict[str, Any]) -> None:
+    def __init__(
+        self, app, route_templates: List[List[str]], setting: Dict[str, Any]
+    ) -> None:
         super().__init__(app)
-        self.endpoint_id = str(endpoint_id).strip()
+        self.route_templates = route_templates
         # Gateway setting dict — carries jwt_secret / jwt_config (from the
         # se-configdata overlay) exactly like the Lambda chain's merged
         # connection setting that the framework passes to the authorizer.
@@ -192,14 +203,20 @@ class BanyanAuthorizerBridge(BaseHTTPMiddleware):
     # ------------------------------------------------------------------
 
     def _is_banyan_path(self, path: str) -> bool:
-        """True when the (already normalized) path targets the Banyan app.
-
-        Banyan paths are ``/{endpoint_id}/{function}`` after the path
-        normalizer stripped ``/{stage}/{area}``; everything else belongs
-        to the gateway's own auth (FlexJWT).
+        """True when the (already normalized) path matches one of this
+        bridge's route templates — ``{...}`` segments (``{endpoint_id}``,
+        ``{task_id}``, ...) are wildcards, matched positionally against
+        whatever the real request contains, never compared to a fixed value.
         """
         segments = [seg for seg in path.split("/") if seg]
-        return bool(segments) and segments[0] == self.endpoint_id
+        return any(
+            len(segments) == len(template)
+            and all(
+                seg == tpl or (tpl.startswith("{") and tpl.endswith("}"))
+                for seg, tpl in zip(segments, template)
+            )
+            for template in self.route_templates
+        )
 
     def _build_proxy_event(self, request: Request) -> Dict[str, Any]:
         """Synthesize a Lambda-style proxy event for verify_permission.

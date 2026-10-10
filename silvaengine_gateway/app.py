@@ -15,9 +15,13 @@ changes on the engine side: the se-configdata setting overlay
 (setting_builder), the framework pool bootstrap
 (``_bootstrap_framework_pools`` below), the Banyan path normalizer
 (middleware.path_normalizer), and the PermAuthorizer auth bridge
-(auth.middleware). Everything is inert unless Banyan hosting is enabled
-via env (``SETTING_SOURCE=se-configdata`` and/or ``ENDPOINT_ID``) — a
-gateway deployed without those variables behaves exactly as before.
+(auth.middleware). The auth bridge is selected PER MODULE via a generic
+``ModuleSpec.auth_bridge`` label (not a single gateway-wide endpoint_id
+switch) — any module with ``auth_bridge: banyan`` in its route manifest
+entry gets real PermAuthorizer checking for every tenant (see
+``router_builder.route_templates_for_auth_bridge``). Everything is inert
+unless at least one module opts in — a gateway whose manifest has no
+``auth_bridge: banyan`` modules behaves exactly as before.
 """
 
 from __future__ import print_function
@@ -39,11 +43,33 @@ from .router_builder import (
     build_router_from_manifest,
     validate_manifest,
     resolve_dispatch,
+    route_templates_for_auth_bridge,
 )
 from .setting_builder import build_setting_from_env
 from .websocket_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
+
+# Registry mapping an ``auth_bridge`` label (ModuleSpec.auth_bridge in the
+# route manifest) to the middleware that implements it. Resolved through
+# resolve_dispatch (the same "package.module:Class" convention used for
+# config_class/dispatch/on_startup elsewhere in the manifest) — adding a new
+# bridge means registering it here, not adding another branch in
+# create_app(). "banyan" is the only one that ships today.
+#
+# A registered bridge middleware must accept ``(app, route_templates:
+# List[List[str]], setting: Dict[str, Any])`` — the common contract for
+# "gate a fixed set of path templates with a custom authorizer, using the
+# shared gateway setting dict" (see auth.middleware.BanyanAuthorizerBridge).
+# ``path_normalizer`` is optional — only bridges whose frontend uses a
+# different URL-prefix contract than the gateway's native
+# ``/{endpoint_id}/{function}`` need one.
+_AUTH_BRIDGES: Dict[str, Dict[str, str]] = {
+    "banyan": {
+        "middleware": "silvaengine_gateway.auth.middleware:BanyanAuthorizerBridge",
+        "path_normalizer": "silvaengine_gateway.middleware.path_normalizer:BanyanPathNormalizer",
+    },
+}
 
 # Re-exported for backward compatibility: callers (run_daemon, gen_token, tests)
 # import these from silvaengine_gateway.app. They now live in dedicated modules.
@@ -480,6 +506,25 @@ def create_app(setting: Optional[Dict[str, Any]] = None) -> FastAPI:
     gw_logger = logging.getLogger("silvaengine_gateway")
     GatewayConfig.initialize(gw_logger, setting)
 
+    # auth_provider="module": fail fast on a misconfigured auth_module_dispatch
+    # at startup rather than only discovering it on the first /auth/token call.
+    # Not hardcoded to any specific engine (see routes/auth.py::
+    # _get_module_auth_token) — resolved the same importlib-based way as every
+    # other dispatch/config_class/on_startup ref in the route manifest.
+    if GatewayConfig.auth_provider == "module":
+        try:
+            resolve_dispatch(GatewayConfig.auth_module_dispatch)
+            gw_logger.info(
+                f"auth_provider=module: auth_module_dispatch "
+                f"'{GatewayConfig.auth_module_dispatch}' resolved successfully."
+            )
+        except (ImportError, AttributeError, TypeError) as e:
+            gw_logger.warning(
+                f"auth_provider=module: auth_module_dispatch "
+                f"'{GatewayConfig.auth_module_dispatch}' failed to resolve "
+                f"({e}) — /auth/token will 500 until this is fixed."
+            )
+
     # Load route manifest
     manifest = load_route_manifest(GatewayConfig)
 
@@ -604,28 +649,44 @@ def create_app(setting: Optional[Dict[str, Any]] = None) -> FastAPI:
         public_suffixes=["/.well-known/agent-card.json"],
     )
 
-    # Banyan hosting: path normalizer + PermAuthorizer bridge (merged from
-    # api-runtime). Added after FlexJWT, so at RUNTIME they wrap it:
+    # Auth bridges: an optional authorizer bridge (+ matching path
+    # normalizer) per distinct ``auth_bridge`` label used in the manifest —
+    # resolved via _AUTH_BRIDGES above, not hardcoded by name here. Added
+    # after FlexJWT, so at RUNTIME each wraps it:
     #   CORS → Normalizer → Bridge → FlexJWT → RateLimit → routes
-    # The bridge must sit OUTSIDE FlexJWT: Banyan JWTs are verified by the
-    # real perm_engine authorizer, whose marker lets FlexJWT hand off
-    # instead of re-rejecting. Mounted only when ENDPOINT_ID is set —
-    # other deployments see zero change.
-    from .auth.middleware import BanyanAuthorizerBridge
-    from .middleware.path_normalizer import BanyanPathNormalizer
+    # A bridge must sit OUTSIDE FlexJWT: its own tokens are verified by its
+    # own authorizer, whose marker lets FlexJWT hand off instead of
+    # re-rejecting. Selected PER MODULE (ModuleSpec.auth_bridge), not per
+    # tenant — a module with auth_bridge: "banyan" gets real PermAuthorizer
+    # checking regardless of which endpoint_id/tenant appears in the URL.
+    # Mounted only for labels at least one module actually uses —
+    # deployments with none see zero change. endpoint_id/part_id are never
+    # passed in as fixed values; each bridge reads them per-request from the
+    # proxy event's own path/Part-Id header.
+    for bridge_name in {mod.auth_bridge for mod in manifest if mod.auth_bridge}:
+        bridge_cfg = _AUTH_BRIDGES.get(bridge_name)
+        if not bridge_cfg:
+            gw_logger.warning(
+                f"auth_bridge '{bridge_name}' has no registered middleware "
+                f"(see app.py::_AUTH_BRIDGES) — its modules get no auth "
+                f"beyond FlexJWT."
+            )
+            continue
 
-    banyan_endpoint_id = os.getenv("ENDPOINT_ID", "").strip()
-    if banyan_endpoint_id:
-        app.add_middleware(
-            BanyanAuthorizerBridge,
-            endpoint_id=banyan_endpoint_id,
-            setting=setting,
-        )
-        app.add_middleware(
-            BanyanPathNormalizer,
-            stage=os.getenv("ADAPTER_STAGE", "beta"),
-            area=os.getenv("ADAPTER_AREA", "core"),
-        )
+        templates = route_templates_for_auth_bridge(manifest, bridge_name)
+        if not templates:
+            continue
+
+        bridge_cls = resolve_dispatch(bridge_cfg["middleware"])
+        app.add_middleware(bridge_cls, route_templates=templates, setting=setting)
+
+        if bridge_cfg.get("path_normalizer"):
+            normalizer_cls = resolve_dispatch(bridge_cfg["path_normalizer"])
+            app.add_middleware(
+                normalizer_cls,
+                stage=os.getenv("ADAPTER_STAGE", "beta"),
+                area=os.getenv("ADAPTER_AREA", "core"),
+            )
 
     # CORS — added LAST so it is the OUTERMOST middleware (see note above).
     from fastapi.middleware.cors import CORSMiddleware
