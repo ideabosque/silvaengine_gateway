@@ -34,13 +34,28 @@ class GatewayConfig:
     _USERS: Dict[str, LocalUser] = {}
 
     # Auth settings
-    auth_provider: str = "local"  # "local" or "cognito"
+    auth_provider: str = "local"  # "local" | "cognito" | "module"
     jwt_secret_key: str = "CHANGEME"
     jwt_algorithm: str = "HS256"
     access_token_exp: int = 15  # minutes
     admin_username: str = ""
     admin_password: str = ""
     admin_static_token: str = ""
+
+    # auth_provider="module" settings (see routes/auth.py::_get_module_auth_token).
+    # Not hardcoded to any specific engine — auth_module_dispatch is a
+    # "package.module:function" ref (same convention as routes.yaml's own
+    # `dispatch`/`on_startup`/etc., resolved via router_builder.resolve_dispatch)
+    # pointing at ANY module's dispatch_graphql-style entry point that exposes a
+    # `login(input: {email, password}, idempotencyKey)` mutation returning
+    # `{authToken, requiresMfa}` — user_engine is just the default/example target.
+    # No part_id here: it now has one specific meaning system-wide — the
+    # authenticated caller's real tenant_id (see b2b-agent-builder's
+    # Part-Id header, set post-login from UserType.tenantId) — which by
+    # definition doesn't exist yet at this pre-login call. A static
+    # override would just reintroduce a fixed value standing in for
+    # something that's supposed to be per-user.
+    auth_module_dispatch: str = "user_engine.main:dispatch_graphql"
 
     # Cognito settings
     cognito_user_pool_id: str = ""
@@ -101,6 +116,7 @@ class GatewayConfig:
             cls.admin_username = ""
             cls.admin_password = ""
             cls.admin_static_token = ""
+            cls.auth_module_dispatch = "user_engine.main:dispatch_graphql"
             cls.cognito_user_pool_id = ""
             cls.cognito_app_client_id = ""
             cls.cognito_app_secret = ""
@@ -112,12 +128,23 @@ class GatewayConfig:
     @classmethod
     def _initialize_auth(cls, setting: Dict[str, Any]) -> None:
         cls.auth_provider = setting.get("auth_provider", os.getenv("GATEWAY_AUTH_PROVIDER", "local"))
-        cls.jwt_secret_key = setting.get("jwt_secret_key", os.getenv("JWT_SECRET_KEY", "CHANGEME"))
+        # Fall back to the platform's shared jwt_secret (the only secret an
+        # se-configdata deployment carries) so FlexJWT verifies the engines'
+        # service tokens.
+        cls.jwt_secret_key = (
+            setting.get("jwt_secret_key")
+            or setting.get("jwt_secret")
+            or os.getenv("JWT_SECRET_KEY", "CHANGEME")
+        )
         cls.jwt_algorithm = setting.get("jwt_algorithm", os.getenv("JWT_ALGORITHM", "HS256"))
         cls.access_token_exp = int(setting.get("access_token_exp", os.getenv("ACCESS_TOKEN_EXP", "15")))
         cls.admin_username = setting.get("admin_username", os.getenv("ADMIN_USERNAME", ""))
         cls.admin_password = setting.get("admin_password", os.getenv("ADMIN_PASSWORD", ""))
         cls.admin_static_token = setting.get("admin_static_token", os.getenv("ADMIN_STATIC_TOKEN", ""))
+        cls.auth_module_dispatch = setting.get(
+            "auth_module_dispatch",
+            os.getenv("GATEWAY_AUTH_MODULE_DISPATCH", "user_engine.main:dispatch_graphql"),
+        )
 
         # Server settings
         cls.host = setting.get("host", os.getenv("GATEWAY_HOST", "0.0.0.0"))

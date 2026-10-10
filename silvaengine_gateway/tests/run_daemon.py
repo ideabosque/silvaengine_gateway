@@ -240,7 +240,11 @@ def main() -> None:
     print(f"\n{'='*60}")
     print(f"  SilvaEngine Gateway")
     print(f"  http://{host}:{port}")
-    print(f"  Auth: {setting.get('auth_provider', 'local')}")
+    auth_provider = setting.get("auth_provider", "local")
+    auth_line = f"  Auth: {auth_provider}"
+    if auth_provider == "module":
+        auth_line += f" ({setting.get('auth_module_dispatch', 'user_engine.main:dispatch_graphql')})"
+    print(auth_line)
     print(
         f"  Endpoint: {setting.get('endpoint_id')} / Partition: {setting.get('part_id')}"
     )
