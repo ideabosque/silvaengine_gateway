@@ -526,7 +526,12 @@ def fake_perm(monkeypatch):
     return _FakeAuthorizer
 
 
-def _make_bridge_app(endpoint_id="banyan"):
+#: Route templates as built from an auth_bridge="banyan" module: "{...}"
+#: segments are wildcards, so any endpoint_id prefix matches.
+_BRIDGE_TEMPLATES = [["{endpoint_id}", "user_engine_graphql"]]
+
+
+def _make_bridge_app():
     async def echo(request):
         try:
             body = await request.json()
@@ -548,7 +553,7 @@ def _make_bridge_app(endpoint_id="banyan"):
     )
     app.add_middleware(
         BanyanAuthorizerBridge,
-        endpoint_id=endpoint_id,
+        route_templates=_BRIDGE_TEMPLATES,
         setting={"jwt_secret": "bridge-test-secret"},
     )
     return app
@@ -596,6 +601,19 @@ def test_bridge_passes_non_banyan_path_through(fake_perm):
     assert r.status_code == 200
     assert fake_perm.last_event is None  # authorizer never ran
     assert r.json()["marked"] is False
+
+
+def test_bridge_gates_opted_in_route_under_any_endpoint_id(fake_perm):
+    fake_perm.claims = dict(_CLAIMS)
+    client = TestClient(_make_bridge_app())
+    r = client.post(
+        "/gpt/user_engine_graphql",
+        headers={"Authorization": "Bearer tok"},
+        json={"query": "{ me { user_id } }"},
+    )
+    assert r.status_code == 200
+    assert r.json()["user"] == _CLAIMS
+    assert fake_perm.last_event["path"] == "/gpt/user_engine_graphql"
 
 
 def test_bridge_authentication_error_maps_401(fake_perm):
@@ -771,8 +789,30 @@ def _middleware_classes(app):
     return [m.cls for m in app.user_middleware]
 
 
+_NO_BRIDGE_MANIFEST = """
+modules:
+  - name: plain_engine
+    package: plain_engine
+    transport: graphql
+    routes:
+      - path: "/{endpoint_id}/plain_graphql"
+        handler_type: graphql
+        dispatch: "plain_engine.main:dispatch_graphql"
+        methods: ["POST"]
+        auth: true
+"""
+
+
+def _no_bridge_setting(tmp_path, monkeypatch):
+    """create_app setting whose manifest has no auth_bridge module."""
+    manifest = tmp_path / "routes.yaml"
+    manifest.write_text(_NO_BRIDGE_MANIFEST, encoding="utf-8")
+    monkeypatch.delenv("GATEWAY_ROUTES_CONFIG_PATH", raising=False)
+    return dict(_TEST_SETTING, routes_config_path=str(manifest))
+
+
 def test_create_app_mounts_banyan_middlewares_in_order(monkeypatch):
-    monkeypatch.setenv("ENDPOINT_ID", "banyan")
+    monkeypatch.delenv("GATEWAY_ROUTES_CONFIG_PATH", raising=False)
     app = create_app(dict(_TEST_SETTING))
     classes = _middleware_classes(app)
     assert BanyanAuthorizerBridge in classes
@@ -783,60 +823,54 @@ def test_create_app_mounts_banyan_middlewares_in_order(monkeypatch):
     assert classes.index(BanyanAuthorizerBridge) < classes.index(FlexJWTMiddleware)
 
 
-def test_create_app_without_endpoint_id_adds_no_banyan_middleware(monkeypatch):
-    monkeypatch.delenv("ENDPOINT_ID", raising=False)
-    app = create_app(dict(_TEST_SETTING))
+def test_create_app_without_auth_bridge_modules_adds_no_banyan_middleware(
+    tmp_path, monkeypatch
+):
+    app = create_app(_no_bridge_setting(tmp_path, monkeypatch))
     classes = _middleware_classes(app)
     assert BanyanAuthorizerBridge not in classes
     assert BanyanPathNormalizer not in classes
 
 
 def test_full_stack_banyan_request_round_trip(fake_perm, monkeypatch):
-    monkeypatch.setenv("ENDPOINT_ID", "banyan")
     monkeypatch.setenv("ADAPTER_STAGE", "beta")
     monkeypatch.setenv("ADAPTER_AREA", "core")
+    monkeypatch.delenv("GATEWAY_ROUTES_CONFIG_PATH", raising=False)
     fake_perm.claims = dict(_CLAIMS)
+
+    captured = []
+
+    def _fake_dispatch(**params):
+        captured.append(params)
+        return {"dispatched": True}
+
+    monkeypatch.setattr(
+        router_builder_module, "resolve_dispatch", lambda spec: _fake_dispatch
+    )
     app = create_app(dict(_TEST_SETTING))
-
-    from fastapi import Request as FastAPIRequest
-    from fastapi.responses import JSONResponse as FastAPIJSONResponse
-
-    @app.post("/banyan/echo_route")
-    async def _echo(request: FastAPIRequest):
-        try:
-            body = await request.json()
-        except Exception:
-            body = None
-        return FastAPIJSONResponse(
-            {
-                "user": getattr(request.state, "user", None),
-                "marked": bool(getattr(request.state, AUTH_CHECKED_ATTR, False)),
-                "body": body,
-            }
-        )
 
     client = TestClient(app)
     r = client.post(
-        "/beta/core/banyan/echo_route",  # frontend contract path
+        "/beta/core/banyan/user_engine_graphql",  # frontend contract path
         headers={
             "Authorization": "Bearer not-a-local-jwt",  # only Banyan can verify this
             "part_id": "p-1",
         },
         json={"query": "{ me { user_id } }"},
     )
-    assert r.status_code == 200
-    data = r.json()
-    assert data["user"] == _CLAIMS
-    assert data["marked"] is True
-    assert data["body"] == {"query": "{ me { user_id } }"}
+    assert r.status_code == 200, r.text
+    assert r.json()["dispatched"] is True
+    # Bridge-verified claims were promoted into the dispatch context.
+    context = captured[-1]["context"]
+    assert context["user_id"] == "u-1"
+    assert context["tenant_id"] == "t-1"
     # The authorizer saw the frontend-style headers and GraphQL body
     assert fake_perm.last_event["headers"]["part_id"] == "p-1"
     assert json.loads(fake_perm.last_event["body"])["query"] == "{ me { user_id } }"
 
 
-def test_full_stack_without_bridge_rejects_banyan_token(monkeypatch):
-    monkeypatch.delenv("ENDPOINT_ID", raising=False)
-    app = create_app(dict(_TEST_SETTING))
+def test_full_stack_without_bridge_rejects_banyan_token(tmp_path, monkeypatch):
+    app = create_app(_no_bridge_setting(tmp_path, monkeypatch))
     client = TestClient(app)
     r = client.post(
         "/banyan/user_engine_graphql",
@@ -966,7 +1000,6 @@ def test_full_stack_anonymous_banyan_route_reaches_dispatch(
     request must reach the dispatch; reverting the yaml to auth:true would
     bring back Depends(get_current_user) and fail this test with 401.
     """
-    monkeypatch.setenv("ENDPOINT_ID", "banyan")
     monkeypatch.setenv("ADAPTER_STAGE", "beta")
     monkeypatch.setenv("ADAPTER_AREA", "core")
     monkeypatch.delenv("GATEWAY_ROUTES_CONFIG_PATH", raising=False)
@@ -1020,7 +1053,6 @@ def test_full_stack_authenticated_banyan_route_promotes_claims(
     stores authorizer claims on request.state.user and _inject_user_claims
     lifts user_id / is_admin / roles / tenant_id into dispatch context.
     """
-    monkeypatch.setenv("ENDPOINT_ID", "banyan")
     monkeypatch.setenv("ADAPTER_STAGE", "beta")
     monkeypatch.setenv("ADAPTER_AREA", "core")
     monkeypatch.delenv("GATEWAY_ROUTES_CONFIG_PATH", raising=False)
