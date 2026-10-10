@@ -37,8 +37,19 @@ settings:
   auth_provider:
     env: [GATEWAY_AUTH_PROVIDER, AUTH_PROVIDER]
     default: local
+  # No default: when unset, GatewayConfig falls back to jwt_secret below, so
+  # local-JWT verification (FlexJWT, e.g. MCP routes) accepts the engines'
+  # service tokens signed with the shared secret from se-configdata.
   jwt_secret_key:
     env: JWT_SECRET_KEY
+  # Banyan: perm_engine.authorizer.PermAuthorizer (BanyanAuthorizerBridge)
+  # and user_engine/perm_engine's own Config read the shared signing secret
+  # under this key — in production it comes from the se-configdata DDB
+  # overlay; local/non-DDB deployments need it declared here too. Reuses
+  # JWT_SECRET_KEY's value by default (single secret); set JWT_SECRET
+  # explicitly for a different value.
+  jwt_secret:
+    env: [JWT_SECRET, JWT_SECRET_KEY]
     default: CHANGEME
   jwt_algorithm:
     env: JWT_ALGORITHM
@@ -57,6 +68,15 @@ settings:
     default: ""
   local_user_file:
     env: LOCAL_USER_FILE
+  # Only used when auth_provider=module (routes/auth.py::_get_module_auth_token).
+  # auth_module_dispatch is a "package.module:function" ref resolved via
+  # router_builder.resolve_dispatch — NOT hardcoded to any specific engine;
+  # user_engine is just the default target. No part_id setting: it now means
+  # the caller's real tenant_id, unknowable before login. Login dispatch
+  # receives endpoint_id=None; custom targets can supply it in an adapter.
+  auth_module_dispatch:
+    env: GATEWAY_AUTH_MODULE_DISPATCH
+    default: "user_engine.main:dispatch_graphql"
 
   # ── Cognito ───────────────────────────────────────────────────────────
   cognito_user_pool_id:
@@ -134,6 +154,13 @@ settings:
   neo4j_database:
     env: neo4j_database
     default: neo4j
+
+  # ── Static assets S3 ──────────────────────────────────────────────────
+  # Platform static-assets bucket. Modules expecting the nested
+  # settings["static_assets_s3"] assemble it via config_overrides
+  # (see module_routes/knowledge_engine.yaml).
+  static_assets_s3_bucket:
+    env: STATIC_ASSETS_S3_BUCKET
 
   # ── Cache ─────────────────────────────────────────────────────────────
   cache_enabled:
@@ -233,6 +260,22 @@ settings:
   sce_pg_table_prefix:
     env: SCE_PG_TABLE_PREFIX
     default: sce_
+
+  # ── Capability Engine: MCP protocol loopback ───────────────────────────
+  # capability_engine calls this gateway's own mcp_protocol_plugin routes
+  # (/mcp, /mcp_daemon_graphql) over HTTP, addressed and authenticated
+  # end-to-end by the real caller's own identity (endpoint_id/part_id from
+  # their partition_key, a short-lived service token minted from their
+  # actor_id/tenant_id — see capability_engine/utils/service_token.py and
+  # capability_engine/handlers/mcp_protocol_adapter.py) — no separate
+  # endpoint_id or static credential config.
+  capability_mcp_gateway_base_url:
+    env: CAPABILITY_MCP_GATEWAY_BASE_URL
+  # Comma-separated module names to label transport="builtin" in
+  # capabilityMcpProviderList (display-only override, see
+  # capability_engine/queries/capability_mcp.py::_builtin_modules()).
+  capability_mcp_builtin_modules:
+    env: CAPABILITY_MCP_BUILTIN_MODULES
 
   # ── Shared-store backends (multi-process support) ─────────────────────
   task_backend:

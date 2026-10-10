@@ -85,6 +85,24 @@ class ModuleSpec(BaseModel):
     name: str
     package: str  # e.g. "knowledge_graph_engine"
     transport: str = "graphql"  # "graphql" | "rest" | "hybrid"
+
+    auth_bridge: Optional[str] = None
+    # Selects the AUTH MECHANISM for every route in this module, regardless
+    # of which tenant/endpoint_id appears in the URL — not tied to any one
+    # bridge implementation: the value is a label (e.g. "banyan") that
+    # app.py::_AUTH_BRIDGES maps to a concrete middleware class (resolved
+    # via resolve_dispatch, same "package.module:Class" convention as
+    # config_class/on_startup/etc.). route_templates_for_auth_bridge() below
+    # only extracts the path templates for a given label — the label→class
+    # mapping itself lives in app.py, not here. Unset (default) leaves the
+    # module on the gateway's own lighter FlexJWTMiddleware (signature-only,
+    # no DB role lookup). Currently only "banyan" is registered (→
+    # BanyanAuthorizerBridge, real perm_engine.PermAuthorizer — Postgres-
+    # backed role lookup per request), but neither this field nor the
+    # registry hardcode that. Orthogonal to RouteSpec.auth, which only
+    # toggles whether FastAPI attaches Depends(get_current_user) to a
+    # route — it doesn't select which middleware authenticates it.
+
     routes: List[RouteSpec] = Field(default_factory=list)
     config: Dict[str, Any] = Field(default_factory=dict)
     invoker_class_name: Optional[str] = None
@@ -232,10 +250,18 @@ def _resolve_setting_ref(value: Any, setting: Dict[str, Any]) -> Any:
     ``None`` if that key was never set (no env var and no ``default:`` in
     settings.yaml). Shared by ``config_overrides`` and ``proxy_targets``
     resolution so both use identical indirection semantics.
+
+    Dicts and lists are resolved recursively, so an override can assemble a
+    nested setting a module expects from flat keys, e.g.
+    ``neo4j: {uri: "{setting:neo4j_uri}", ...}``.
     """
     if isinstance(value, str) and value.startswith("{setting:") and value.endswith("}"):
         ref_key = value[len("{setting:"):-1]
         return setting.get(ref_key)
+    if isinstance(value, dict):
+        return {k: _resolve_setting_ref(v, setting) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_setting_ref(v, setting) for v in value]
     return value
 
 
@@ -246,6 +272,30 @@ def _resolve_timeout(value: Any, setting: Dict[str, Any], default: float = 30.0)
         return float(resolved)
     except (TypeError, ValueError):
         return default
+
+
+def route_templates_for_auth_bridge(
+    manifest: List[ModuleSpec], bridge: str
+) -> List[List[str]]:
+    """Path-template segments for every route whose module opted into the
+    given ``auth_bridge`` label (e.g. ``"banyan"``), for a bridge
+    middleware's own lightweight per-request path matching (such middleware
+    runs before FastAPI's own router resolves a match, so it can't rely on
+    normal route resolution).
+
+    Each ``route.path`` (e.g. ``"/{endpoint_id}/capability_engine_graphql"``)
+    is split on ``"/"``; the result is a list of segment-lists where any
+    ``"{...}"`` segment (``{endpoint_id}``, ``{task_id}``, ...) is a
+    wildcard — matched positionally, never compared literally, so
+    endpoint_id/part_id are read from the actual request (path/``Part-Id``
+    header) at auth time, never baked in as a fixed constructor value.
+    """
+    return [
+        [seg for seg in route.path.split("/") if seg]
+        for mod in manifest
+        if mod.auth_bridge == bridge
+        for route in mod.routes
+    ]
 
 
 def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
@@ -312,6 +362,9 @@ def _extract_partition_key(request: Request) -> tuple:
     part_id = (
         request.headers.get("Part-Id")
         or request.headers.get("Part-ID")
+        # Banyan frontend convention (underscore). Header matching is
+        # case-insensitive, but hyphen vs underscore are distinct names.
+        or request.headers.get("part_id")
         or request.path_params.get("part_id")
     )
 
@@ -322,6 +375,32 @@ def _extract_partition_key(request: Request) -> tuple:
         )
     partition_key = f"{endpoint_id}#{part_id}"
     return partition_key, endpoint_id, part_id
+
+
+def _inject_user_claims(params: Dict[str, Any], user: Any) -> None:
+    """Promote authenticated claims to top-level context keys (Lambda parity).
+
+    The Lambda chain's framework ``_get_metadata`` lifts user_id / is_admin /
+    roles / tenant_id / merchant_id from ``requestContext.authorizer`` into
+    the same top-level context keys the resolvers read
+    (``info.context["user_id"]`` ...). The BanyanAuthorizerBridge stores the
+    authorizer's claims dict on ``request.state.user``; promoting them here
+    reproduces the chain without touching the framework.
+
+    Anti-spoofing: auth-injected values OVERWRITE client-supplied body
+    context values — Graphql.execute merges ``params["context"]`` last
+    (highest priority), so a caller cannot forge ``user_id`` / ``is_admin``
+    by embedding them in the request body.
+    """
+    if not isinstance(user, dict):
+        # Legacy verbatim behaviour for unexpected user shapes.
+        params.setdefault("context", {})["user"] = user
+        return
+    context = params.setdefault("context", {})
+    context["user"] = user
+    for key in ("user_id", "is_admin", "roles", "tenant_id", "merchant_id"):
+        if user.get(key) is not None:
+            context[key] = user[key]
 
 
 def _dispatch_label(params: Dict[str, Any]) -> str:
@@ -357,7 +436,7 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
     5. Returns the result
     """
 
-    async def handler(request: Request) -> Dict[str, Any]:
+    async def handler(request: Request) -> Union[Dict[str, Any], JSONResponse]:
         # Safely read JSON body — GET/DELETE requests may have no body
         try:
             params = await request.json()
@@ -378,10 +457,10 @@ def _make_sync_handler(dispatch_fn: Callable) -> Callable:
         params["endpoint_id"] = endpoint_id
         params["part_id"] = part_id
 
-        # Inject authenticated user
+        # Inject authenticated user (+ authorizer claims, Lambda parity)
         user = getattr(request.state, "user", None)
         if user:
-            params["context"]["user"] = user
+            _inject_user_claims(params, user)
 
         # Forward request headers so a dispatch can read transport-level
         # metadata that has no place in the payload — an Idempotency-Key is
@@ -483,7 +562,7 @@ def _make_background_handler(dispatch_fn: Callable) -> Callable:
 
         user = getattr(request.state, "user", None)
         if user:
-            params["context"]["user"] = user
+            _inject_user_claims(params, user)
 
         params["headers"] = {k.lower(): v for k, v in request.headers.items()}
 
@@ -612,7 +691,7 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
         try:
             partition_key, endpoint_id, part_id = _extract_partition_key(request)
         except HTTPException:
-            partition_key, endpoint_id, part_id = "", "", ""
+            partition_key = ""
 
         # Register client with partition context
         client_id, queue = await _sse_manager.add_client(
@@ -999,7 +1078,7 @@ def _make_websocket_handler(
                 #   async_task_uuid, arguments, + context (endpoint_id, part_id, etc.)
                 if not isinstance(message, dict):
                     message = {}
-                params = {}
+                params: Dict[str, Any] = {}
 
                 # Unwrap action/arguments envelope (ai_agent_core_engine pattern)
                 if "arguments" in message and isinstance(message["arguments"], dict):
@@ -1088,7 +1167,7 @@ def _make_websocket_handler(
                 except Exception as exc:
                     logger.error(
                         "WebSocket dispatch error [%s]: %s",
-                        dispatch_fn.__name__ if dispatch_fn else "None",
+                        dispatch_fn.__name__ if dispatch_fn is not None else "None",
                         traceback.format_exc(),
                     )
                     await websocket.send_json({
@@ -1162,8 +1241,11 @@ def init_module_configs(
             continue
 
         try:
-            # Resolve "package.module:ClassName" → the Config class
-            config_cls = resolve_dispatch(module.config_class)
+            # Resolve "package.module:ClassName" → the Config class. The
+            # resolved object is a class (its ``initialize`` is a
+            # classmethod/staticmethod), not a plain callable — annotate as
+            # Any so the class-level access below type-checks.
+            config_cls: Any = resolve_dispatch(module.config_class)
         except (ImportError, AttributeError, TypeError) as e:
             logger.warning(
                 f"Module '{module.name}': config_class '{module.config_class}' "
@@ -1196,8 +1278,23 @@ def init_module_configs(
         # boolean xml_convert explicitly set to false) still applies — only
         # a truly *unset* reference is skipped. A literal (non {setting:...})
         # override value is always applied as given.
+        #
+        # A dict override assembles a nested setting from flat keys and only
+        # fills sub-keys the module setting doesn't already have: when the
+        # nested setting is supplied directly (e.g. by the se-configdata
+        # overlay), it wins over values derived from flat keys, which may be
+        # just settings.yaml defaults in that deployment.
         if module.config_overrides:
             for override_key, override_val in module.config_overrides.items():
+                if isinstance(override_val, dict):
+                    existing = module_setting.get(override_key)
+                    merged = dict(existing) if isinstance(existing, dict) else {}
+                    for sub_key, sub_val in _resolve_setting_ref(override_val, setting).items():
+                        if sub_val is not None and merged.get(sub_key) in (None, ""):
+                            merged[sub_key] = sub_val
+                    if merged:
+                        module_setting[override_key] = merged
+                    continue
                 is_ref = (
                     isinstance(override_val, str)
                     and override_val.startswith("{setting:")
@@ -1372,6 +1469,15 @@ def build_router_from_manifest(
                 )
                 continue
             else:
+                # graphql/rest/background: RouteSpec's model_validator
+                # guarantees a dispatch is set for these handler types;
+                # the guard below is defensive narrowing only.
+                if not route.dispatch:
+                    logger.error(
+                        f"Skipping route {route.path} in {module.name}: "
+                        f"no dispatch configured"
+                    )
+                    continue
                 try:
                     dispatch_fn = resolve_dispatch(route.dispatch)
                 except (ImportError, AttributeError, TypeError) as e:
@@ -1393,10 +1499,18 @@ def build_router_from_manifest(
                 dependencies.append(Depends(auth_dependency))
 
             for method in route.methods:
+                # response_model=None: dispatch handlers return a plain dict or a
+                # prebuilt JSONResponse (e.g. passing through an engine proxy's
+                # statusCode), so the content is fully dynamic. FastAPI >=0.141
+                # infers response_model from a Union[Dict, JSONResponse] return
+                # annotation, and pydantic rejects a Union containing Response, so
+                # startup fails. FastAPI's recommended fix is an explicit
+                # response_model=None to skip the inference.
                 router.add_api_route(
                     route.path,
                     handler,
                     methods=[method],
+                    response_model=None,
                     dependencies=dependencies,
                     name=route.name
                     or f"{module.name}_{method.lower()}_{route.path.strip('/').replace('/', '_')}",

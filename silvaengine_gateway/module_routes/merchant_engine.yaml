@@ -4,6 +4,7 @@
 name: merchant_engine
 package: merchant_engine
 transport: graphql
+auth_bridge: banyan  # always goes through real PermAuthorizer, any tenant
 config_class: "merchant_engine.handlers.config:Config"
 config_init_style: kwargs
 routes:
@@ -11,4 +12,4 @@ routes:
     handler_type: graphql
     dispatch: "merchant_engine.main:dispatch_graphql"
     methods: ["POST"]
-    auth: true
+    auth: false

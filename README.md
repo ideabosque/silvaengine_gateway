@@ -52,6 +52,10 @@ The default server listens on `0.0.0.0:8000`.
 Invoke-RestMethod http://localhost:8000/health
 ```
 
+Container deployment of the Banyan data plane (docker compose, `deploy.sh`)
+lives in the separate `docker-banyanos-gateway` project, which bind-mounts
+this repo's `silvaengine_gateway/` package.
+
 ## Authentication
 
 `POST /auth/token` accepts OAuth2 form fields (`username` and `password`).
