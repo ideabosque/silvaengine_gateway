@@ -1278,8 +1278,23 @@ def init_module_configs(
         # boolean xml_convert explicitly set to false) still applies — only
         # a truly *unset* reference is skipped. A literal (non {setting:...})
         # override value is always applied as given.
+        #
+        # A dict override assembles a nested setting from flat keys and only
+        # fills sub-keys the module setting doesn't already have: when the
+        # nested setting is supplied directly (e.g. by the se-configdata
+        # overlay), it wins over values derived from flat keys, which may be
+        # just settings.yaml defaults in that deployment.
         if module.config_overrides:
             for override_key, override_val in module.config_overrides.items():
+                if isinstance(override_val, dict):
+                    existing = module_setting.get(override_key)
+                    merged = dict(existing) if isinstance(existing, dict) else {}
+                    for sub_key, sub_val in _resolve_setting_ref(override_val, setting).items():
+                        if sub_val is not None and merged.get(sub_key) in (None, ""):
+                            merged[sub_key] = sub_val
+                    if merged:
+                        module_setting[override_key] = merged
+                    continue
                 is_ref = (
                     isinstance(override_val, str)
                     and override_val.startswith("{setting:")
@@ -1484,11 +1499,13 @@ def build_router_from_manifest(
                 dependencies.append(Depends(auth_dependency))
 
             for method in route.methods:
-                # response_model=None：dispatch 处理器返回原生 dict 或预构建
-                # JSONResponse（如 engine 代理的 statusCode 透传），内容完全动态。
-                # FastAPI ≥0.141 会从 Union[Dict, JSONResponse] 返回注解推断
-                # response_model，pydantic 拒绝含 Response 的 Union → 启动即炸。
-                # 官方推荐：此类注解显式 response_model=None 跳过推断。
+                # response_model=None: dispatch handlers return a plain dict or a
+                # prebuilt JSONResponse (e.g. passing through an engine proxy's
+                # statusCode), so the content is fully dynamic. FastAPI >=0.141
+                # infers response_model from a Union[Dict, JSONResponse] return
+                # annotation, and pydantic rejects a Union containing Response, so
+                # startup fails. FastAPI's recommended fix is an explicit
+                # response_model=None to skip the inference.
                 router.add_api_route(
                     route.path,
                     handler,

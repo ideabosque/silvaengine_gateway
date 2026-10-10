@@ -128,7 +128,14 @@ class GatewayConfig:
     @classmethod
     def _initialize_auth(cls, setting: Dict[str, Any]) -> None:
         cls.auth_provider = setting.get("auth_provider", os.getenv("GATEWAY_AUTH_PROVIDER", "local"))
-        cls.jwt_secret_key = setting.get("jwt_secret_key", os.getenv("JWT_SECRET_KEY", "CHANGEME"))
+        # Fall back to the platform's shared jwt_secret (the only secret an
+        # se-configdata deployment carries) so FlexJWT verifies the engines'
+        # service tokens.
+        cls.jwt_secret_key = (
+            setting.get("jwt_secret_key")
+            or setting.get("jwt_secret")
+            or os.getenv("JWT_SECRET_KEY", "CHANGEME")
+        )
         cls.jwt_algorithm = setting.get("jwt_algorithm", os.getenv("JWT_ALGORITHM", "HS256"))
         cls.access_token_exp = int(setting.get("access_token_exp", os.getenv("ACCESS_TOKEN_EXP", "15")))
         cls.admin_username = setting.get("admin_username", os.getenv("ADMIN_USERNAME", ""))

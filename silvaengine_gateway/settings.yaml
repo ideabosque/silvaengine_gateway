@@ -37,9 +37,11 @@ settings:
   auth_provider:
     env: [GATEWAY_AUTH_PROVIDER, AUTH_PROVIDER]
     default: local
+  # No default: when unset, GatewayConfig falls back to jwt_secret below, so
+  # local-JWT verification (FlexJWT, e.g. MCP routes) accepts the engines'
+  # service tokens signed with the shared secret from se-configdata.
   jwt_secret_key:
     env: JWT_SECRET_KEY
-    default: CHANGEME
   # Banyan: perm_engine.authorizer.PermAuthorizer (BanyanAuthorizerBridge)
   # and user_engine/perm_engine's own Config read the shared signing secret
   # under this key — in production it comes from the se-configdata DDB

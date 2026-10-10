@@ -7,6 +7,13 @@ transport: graphql
 auth_bridge: banyan  # always goes through real PermAuthorizer, any tenant
 config_class: "memory_engine.handlers.config:Config"
 config_init_style: kwargs
+# memory_engine reads a nested settings["neo4j"]; assemble it from the
+# gateway's shared flat neo4j_* keys (a directly supplied one wins).
+config_overrides:
+  neo4j:
+    uri: "{setting:neo4j_uri}"
+    user: "{setting:neo4j_username}"
+    password: "{setting:neo4j_password}"
 routes:
   - path: "/{endpoint_id}/memory_engine_graphql"
     handler_type: graphql

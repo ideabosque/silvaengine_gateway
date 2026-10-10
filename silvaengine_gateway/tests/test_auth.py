@@ -56,3 +56,25 @@ def test_create_permanent_jwt():
     claims = verify_local_jwt(token)
     assert claims["username"] == "admin"
     assert claims.get("perm") is True
+
+
+def test_service_token_verifies_with_shared_jwt_secret(monkeypatch):
+    """Without jwt_secret_key (se-configdata deployments), FlexJWT uses jwt_secret."""
+    import time
+
+    import jwt as pyjwt
+    from silvaengine_gateway.config import GatewayConfig
+
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    GatewayConfig.initialize(
+        __import__("logging").getLogger("test"),
+        {"jwt_secret_key": None, "jwt_secret": "shared-ddb-secret", "auth_provider": "local"},
+    )
+    assert GatewayConfig.jwt_secret_key == "shared-ddb-secret"
+
+    token = pyjwt.encode(
+        {"sub": "u-1", "aud": "banyan-graphql", "iss": "banyan", "exp": int(time.time()) + 60},
+        "shared-ddb-secret",
+        algorithm="HS256",
+    )
+    assert verify_local_jwt(token)["sub"] == "u-1"

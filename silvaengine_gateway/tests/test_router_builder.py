@@ -105,6 +105,58 @@ def test_init_module_configs_skips_unset_setting_reference_override(monkeypatch)
     assert result["literal_key"] == "literal_value"
 
 
+def _init_with_nested_override(monkeypatch, setting):
+    captured = {}
+
+    class FakeConfig:
+        @classmethod
+        def initialize(cls, logger, setting):
+            captured["setting"] = setting
+
+    monkeypatch.setattr(
+        "silvaengine_gateway.router_builder.resolve_dispatch",
+        lambda ref: FakeConfig,
+    )
+    module = ModuleSpec(
+        name="fake_module",
+        package="fake_module",
+        config_class="fake_module.handlers.config:Config",
+        config_init_style="dict",
+        config_overrides={
+            "neo4j": {
+                "uri": "{setting:neo4j_uri}",
+                "user": "{setting:neo4j_username}",
+                "password": "{setting:neo4j_password}",
+            },
+        },
+    )
+    init_module_configs([module], setting)
+    return captured["setting"]
+
+
+def test_nested_override_assembles_from_flat_keys(monkeypatch):
+    result = _init_with_nested_override(
+        monkeypatch,
+        {"neo4j_uri": "bolt://h:7687", "neo4j_username": "neo4j", "neo4j_password": "pw"},
+    )
+    assert result["neo4j"] == {"uri": "bolt://h:7687", "user": "neo4j", "password": "pw"}
+
+
+def test_nested_override_keeps_directly_supplied_values(monkeypatch):
+    # se-configdata deployments supply the nested setting directly; flat keys
+    # only carry settings.yaml defaults there and must not clobber it.
+    result = _init_with_nested_override(
+        monkeypatch,
+        {
+            "neo4j": {"uri": "bolt://neo4j:7687", "user": "neo4j", "password": "real"},
+            "neo4j_uri": "bolt://localhost:7687",
+            "neo4j_username": "neo4j",
+            "neo4j_password": None,
+        },
+    )
+    assert result["neo4j"] == {"uri": "bolt://neo4j:7687", "user": "neo4j", "password": "real"}
+
+
 def test_validate_manifest_duplicate_paths():
     """Test that duplicate route paths produce warnings."""
     modules = [
