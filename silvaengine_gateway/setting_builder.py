@@ -25,6 +25,7 @@ import logging
 import os
 import threading
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -440,6 +441,24 @@ OVERRIDE_PREFIX = "SETTING_OVERRIDE_"
 LOOPBACK_BASE_URL_ENV = "BANYAN_LOOPBACK_BASE_URL"
 
 
+def _normalize_record_numbers(value: Any) -> Any:
+    """Recursively convert Decimal numbers to int/float (in place copies).
+
+    DynamoDB ``N`` attributes come back as ``Decimal`` through the boto3
+    resource API. Engine code consumes record numbers as native int/float
+    (e.g. ``timedelta(minutes=session_renewal_minutes)``), which raises
+    ``TypeError: unsupported type for timedelta minutes component: decimal.Decimal``
+    unless normalized right after the record is read.
+    """
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, list):
+        return [_normalize_record_numbers(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_record_numbers(item) for key, item in value.items()}
+    return value
+
+
 def _load_se_configdata_setting(setting: Dict[str, Any]) -> Dict[str, Any]:
     """Overlay the se-configdata record onto ``setting``.
 
@@ -452,6 +471,7 @@ def _load_se_configdata_setting(setting: Dict[str, Any]) -> Dict[str, Any]:
         return setting
 
     record = _read_configdata_record(setting)
+    record = _normalize_record_numbers(record)
     _rewrite_httpx_base_urls(record)
 
     merged = dict(setting)
