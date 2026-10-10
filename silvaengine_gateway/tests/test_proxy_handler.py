@@ -117,6 +117,20 @@ def test_resolve_setting_ref_unset_reference_is_none():
     assert _resolve_setting_ref("{setting:KEY}", {}) is None
 
 
+def test_resolve_setting_ref_resolves_nested_values():
+    setting = {"neo4j_uri": "bolt://h:7687", "neo4j_username": "neo4j"}
+    value = {
+        "neo4j": {"uri": "{setting:neo4j_uri}", "user": "{setting:neo4j_username}"},
+        "hosts": ["{setting:neo4j_uri}", "literal"],
+        "missing": "{setting:absent}",
+    }
+    assert _resolve_setting_ref(value, setting) == {
+        "neo4j": {"uri": "bolt://h:7687", "user": "neo4j"},
+        "hosts": ["bolt://h:7687", "literal"],
+        "missing": None,
+    }
+
+
 def test_resolve_timeout_setting_reference():
     assert _resolve_timeout("{setting:GATEWAY_PROXY_TIMEOUT}", {"GATEWAY_PROXY_TIMEOUT": 45}) == 45.0
 

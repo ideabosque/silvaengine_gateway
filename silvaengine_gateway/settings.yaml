@@ -153,6 +153,13 @@ settings:
     env: neo4j_database
     default: neo4j
 
+  # ── Static assets S3 ──────────────────────────────────────────────────
+  # Platform static-assets bucket. Modules expecting the nested
+  # settings["static_assets_s3"] assemble it via config_overrides
+  # (see module_routes/knowledge_engine.yaml).
+  static_assets_s3_bucket:
+    env: STATIC_ASSETS_S3_BUCKET
+
   # ── Cache ─────────────────────────────────────────────────────────────
   cache_enabled:
     env: cache_enabled

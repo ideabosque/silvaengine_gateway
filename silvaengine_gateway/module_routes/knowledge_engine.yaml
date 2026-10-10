@@ -7,6 +7,16 @@ transport: graphql
 auth_bridge: banyan  # always goes through real PermAuthorizer, any tenant
 config_class: "knowledge_engine.handlers.config:Config"
 config_init_style: kwargs
+# knowledge_engine reads nested settings["neo4j"] and settings["static_assets_s3"];
+# assemble them from the gateway's shared flat keys.
+config_overrides:
+  neo4j:
+    uri: "{setting:neo4j_uri}"
+    user: "{setting:neo4j_username}"
+    password: "{setting:neo4j_password}"
+  static_assets_s3:
+    bucket: "{setting:static_assets_s3_bucket}"
+    region: "{setting:region_name}"
 routes:
   - path: "/{endpoint_id}/knowledge_engine_graphql"
     handler_type: graphql

@@ -250,10 +250,18 @@ def _resolve_setting_ref(value: Any, setting: Dict[str, Any]) -> Any:
     ``None`` if that key was never set (no env var and no ``default:`` in
     settings.yaml). Shared by ``config_overrides`` and ``proxy_targets``
     resolution so both use identical indirection semantics.
+
+    Dicts and lists are resolved recursively, so an override can assemble a
+    nested setting a module expects from flat keys, e.g.
+    ``neo4j: {uri: "{setting:neo4j_uri}", ...}``.
     """
     if isinstance(value, str) and value.startswith("{setting:") and value.endswith("}"):
         ref_key = value[len("{setting:"):-1]
         return setting.get(ref_key)
+    if isinstance(value, dict):
+        return {k: _resolve_setting_ref(v, setting) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_setting_ref(v, setting) for v in value]
     return value
 
 
