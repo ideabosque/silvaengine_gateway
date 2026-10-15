@@ -16,8 +16,8 @@ Prerequisites:
     - MCP configuration loaded (or test will attempt loadMcpConfiguration)
 
 Usage:
-    # pytest (recommended):
-    pytest silvaengine_gateway/tests/test_mcp_e2e.py -v
+    # pytest (recommended) — opt-in, because it targets a live gateway:
+    RUN_MCP_E2E=1 pytest silvaengine_gateway/tests/test_mcp_e2e.py -v
 
     # Run specific test groups:
     python -m silvaengine_gateway.tests.test_mcp_e2e --only graphql
@@ -64,6 +64,14 @@ if Path(_ENV_FILE).exists():
     load_dotenv(_ENV_FILE, override=True)
 
 import requests
+
+# Live test against a running MCP gateway (default http://localhost:8765). Under
+# pytest it only runs on request, so the unit suite does not depend on — or
+# collide with — whatever happens to listen on that port.
+if "pytest" in sys.modules and not os.getenv("RUN_MCP_E2E"):
+    import pytest
+
+    pytest.skip("live MCP E2E: set RUN_MCP_E2E=1 to run", allow_module_level=True)
 
 
 def _promote_editable_finders() -> None:

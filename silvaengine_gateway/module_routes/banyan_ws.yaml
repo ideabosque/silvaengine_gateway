@@ -1,0 +1,20 @@
+# Banyan WebSocket channel (P3, plan §6.7) — one shared WS route; any
+# engine's subscription pushes to it. Handshake auth uses the generic
+# "authorizer" provider (auth/websocket.py) with perm_engine's PermAuthorizer,
+# the same authorizer the HTTP auth bridge uses for Banyan modules.
+# No config_class: agent_engine.yaml already initializes agent_engine's
+# Config, and a config_class here would make this module claim the
+# send_data_to_stream / async_insert_update_tool_call local functions
+# (setting_builder) ahead of ai_agent_core_engine.
+name: banyan_ws
+package: agent_engine
+transport: hybrid
+routes:
+  - path: "/{endpoint_id}/banyan_ws"
+    handler_type: websocket
+    auth: true
+    auth_provider: authorizer
+    authorizer:
+      class: "perm_engine.authorizer:PermAuthorizer"
+      partition_claim: tenant_id
+      admin_claim: is_admin
