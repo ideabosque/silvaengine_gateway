@@ -214,6 +214,12 @@ settings:
   sre_pg_table_prefix:
     env: SRE_PG_TABLE_PREFIX
     default: sre_
+  sre_actor_from_principal:
+    env: SRE_ACTOR_FROM_PRINCIPAL
+    default: "false"
+  sre_enforce_roles:
+    env: SRE_ENFORCE_ROLES
+    default: "false"
   ame_pg_table_prefix:
     env: AME_PG_TABLE_PREFIX
     default: ame_
