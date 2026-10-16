@@ -449,6 +449,23 @@ settings:
     env: GOOSE_APPROVAL_TIMEOUT
     default: "120"
 
+  # -- A2A scheduler (a2a_protocol_plugin/handlers/a2a_scheduler.py) -------
+  # Started by the module's on_startup hook. Schedules are a2a_setting
+  # records "schedule#<id>" (prompt, agent, cron, timezone) managed from the
+  # workbench; each due run is an A2A message/send sent as the scheduler.
+  # Enable on ONE gateway worker only (each worker would run a dispatcher).
+  A2A_SCHEDULER_ENABLED:
+    env: A2A_SCHEDULER_ENABLED
+    default: "true"
+  # Seconds between dispatcher passes (a schedule fires once per cron minute).
+  A2A_SCHEDULER_INTERVAL:
+    env: A2A_SCHEDULER_INTERVAL
+    default: "30"
+  # Partitions to scan, comma-separated "endpoint_id#part_id".
+  A2A_SCHEDULER_PARTITIONS:
+    env: A2A_SCHEDULER_PARTITIONS
+    default: "a2a#default"
+
   # ── A2A bridge — handler resolved from agent metadata or Config fallback ─
   # agent_type is a shorthand that maps to module_name / class_name via
   # AGENT_TYPE_MAP (hermes, core_engine, openclaw, llm). Custom handlers
