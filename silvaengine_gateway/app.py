@@ -572,6 +572,17 @@ def create_app(setting: Optional[Dict[str, Any]] = None) -> FastAPI:
                 }
             )
 
+    # GraphQL subscriptions (silvaengine_utility WebSocketStreamer) deliver
+    # their events through this manager instead of AWS post_to_connection.
+    try:
+        from silvaengine_utility import streaming as _streaming
+
+        if hasattr(_streaming, "set_local_connection_manager"):
+            _streaming.set_local_connection_manager(connection_manager)
+            gw_logger.info("Registered ConnectionManager for GraphQL subscriptions")
+    except ImportError:
+        pass
+
     # Inject the ConnectionManager into module Config classes that support it
     # (e.g. ai_agent_core_engine.handlers.config:Config.set_connection_manager)
     for mod in manifest:

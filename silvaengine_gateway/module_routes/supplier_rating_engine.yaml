@@ -9,6 +9,8 @@ config_class: "supplier_rating_engine.handlers.config:Config"
 config_init_style: dict
 config_overrides:
   pg_table_prefix: "{setting:sre_pg_table_prefix}"
+  ACTOR_FROM_PRINCIPAL: "{setting:sre_actor_from_principal}"
+  ENFORCE_ROLES: "{setting:sre_enforce_roles}"
 routes:
   - path: "/{endpoint_id}/supplier_rating_graphql"
     handler_type: graphql

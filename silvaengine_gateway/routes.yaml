@@ -78,6 +78,7 @@ modules:
 
   # ── Agent Engine (Banyanos) ─────────────────────────────────────────────
   - !include module_routes/agent_engine.yaml
+  - !include module_routes/banyan_ws.yaml
 
   # ── Prompt Engine (Banyanos) ───────────────────────────────────────────
   - !include module_routes/prompt_engine.yaml

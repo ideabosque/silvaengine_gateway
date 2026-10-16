@@ -37,6 +37,20 @@ settings:
   auth_provider:
     env: [GATEWAY_AUTH_PROVIDER, AUTH_PROVIDER]
     default: local
+  # WebSocket "authorizer" provider (auth/websocket.py): a Lambda-style
+  # authorizer class verifies the ?token= handshake. Routes may override each
+  # value in their `authorizer:` mapping.
+  ws_authorizer:              # "package.module:ClassName"
+    env: WS_AUTHORIZER
+  ws_authorizer_method:
+    env: WS_AUTHORIZER_METHOD
+    default: verify_permission
+  ws_partition_claim:         # claim the part_id must match ("none" = no binding)
+    env: WS_PARTITION_CLAIM
+    default: tenant_id
+  ws_admin_claim:             # truthy claim that may use any part_id
+    env: WS_ADMIN_CLAIM
+    default: is_admin
   # No default: when unset, GatewayConfig falls back to jwt_secret below, so
   # local-JWT verification (FlexJWT, e.g. MCP routes) accepts the engines'
   # service tokens signed with the shared secret from se-configdata.
@@ -169,12 +183,12 @@ settings:
     type: int
 
   # ── Dual-backend selection (forwarded to all module Configs) ──────────
-  # db_backend: "dynamodb" (default) or "postgresql". When "postgresql",
+  # db_backend: "postgresql" (default since 2026-10-15) or "dynamodb". When "postgresql",
   # db_* are used instead of DynamoDB. DATABASE_URL takes precedence over
   # the individual PG_* vars where consumers support it (Alembic).
   db_backend:
     env: db_backend
-    default: dynamodb
+    default: postgresql
   db_host:
     env: [PG_HOST, db_host]
   db_port:
@@ -200,6 +214,12 @@ settings:
   sre_pg_table_prefix:
     env: SRE_PG_TABLE_PREFIX
     default: sre_
+  sre_actor_from_principal:
+    env: SRE_ACTOR_FROM_PRINCIPAL
+    default: "false"
+  sre_enforce_roles:
+    env: SRE_ENFORCE_ROLES
+    default: "false"
   ame_pg_table_prefix:
     env: AME_PG_TABLE_PREFIX
     default: ame_
