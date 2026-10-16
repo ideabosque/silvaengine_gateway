@@ -50,7 +50,12 @@ def _get_local_token(username: str, password: str) -> Dict[str, Any]:
     if not user or not user.verify(password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    token = create_local_jwt({"username": user.username, "roles": user.roles})
+    # user_id is the principal downstream engines read (info.context["user_id"],
+    # promoted by _inject_user_claims); without it a users-file account can
+    # authenticate but every actor-bound write is refused.
+    token = create_local_jwt(
+        {"username": user.username, "user_id": user.username, "roles": user.roles}
+    )
     return {"access_token": token, "token_type": "bearer"}
 
 
