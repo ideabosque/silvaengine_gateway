@@ -1088,3 +1088,43 @@ def test_full_stack_authenticated_banyan_route_promotes_claims(
     assert context["tenant_id"] == "t-1"
     assert context["is_admin"] is False
     assert context["roles"] == _CLAIMS["roles"]
+
+def test_partition_key_falls_back_to_deployment_default(monkeypatch):
+    """Engine loopback calls carry no Part-Id; the deployment's configured
+    part_id is used (same fallback the engines apply). Header still wins."""
+    import silvaengine_gateway.router_builder as rb
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(rb, "_DEFAULT_PART_ID", None)
+    req = _make_scope_request(headers={}, path_params={"endpoint_id": "banyan"})
+    with pytest.raises(HTTPException) as exc:
+        _extract_partition_key(req)
+    assert exc.value.status_code == 400
+
+    monkeypatch.setattr(rb, "_DEFAULT_PART_ID", "tenant-default")
+    assert _extract_partition_key(req) == (
+        "banyan#tenant-default", "banyan", "tenant-default"
+    )
+    req = _make_scope_request(
+        headers={"Part-Id": "explicit"}, path_params={"endpoint_id": "banyan"}
+    )
+    assert _extract_partition_key(req)[2] == "explicit"
+
+    # Authenticated tenant wins over the deployment default.
+    req = _make_scope_request(headers={}, path_params={"endpoint_id": "banyan"})
+    req.state.user = {"user_id": "u1", "tenant_id": "tenant-a"}
+    assert _extract_partition_key(req)[2] == "tenant-a"
+    # Platform caller without a tenant → deployment default.
+    req.state.user = {"user_id": "u1", "tenant_id": None}
+    assert _extract_partition_key(req)[2] == "tenant-default"
+
+
+def test_build_router_sets_default_part_id_and_skips_placeholders():
+    import silvaengine_gateway.router_builder as rb
+
+    rb.build_router_from_manifest([], setting={"part_id": "ideabosque"})
+    assert rb._DEFAULT_PART_ID == "ideabosque"
+    rb.build_router_from_manifest([], setting={"part_id": "<TENANT_PART_ID>"})
+    assert rb._DEFAULT_PART_ID is None
+    rb.build_router_from_manifest([], setting={})
+    assert rb._DEFAULT_PART_ID is None

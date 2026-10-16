@@ -63,6 +63,14 @@ class RouteSpec(BaseModel):
     # when unset, ping is answered with a lightweight gateway-level pong.
     ping_dispatch: Optional[str] = None
 
+    # WebSocket only: handshake auth for this route. ``auth_provider``
+    # overrides the gateway default ("local" | "cognito" | "authorizer");
+    # ``authorizer`` holds options for the "authorizer" provider
+    # (class / method / partition_claim / admin_claim), each falling back to
+    # the ws_* gateway settings — see auth/websocket.py.
+    auth_provider: Optional[str] = None
+    authorizer: Optional[Dict[str, Any]] = None
+
     @model_validator(mode="after")
     def _check_dispatch_required(self) -> "RouteSpec":
         # WebSocket routes may omit dispatch (the handler manages its own loop).
@@ -121,6 +129,10 @@ class ModuleSpec(BaseModel):
         default_factory=lambda: [
             # Gateway-only keys never passed to module configs
             "auth_provider",
+            "ws_authorizer",
+            "ws_authorizer_method",
+            "ws_partition_claim",
+            "ws_admin_claim",
             "jwt_secret_key",
             "jwt_algorithm",
             "access_token_exp",
@@ -351,12 +363,39 @@ def validate_manifest(modules: List[ModuleSpec]) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
+#: Deployment default partition (the setting's ``part_id``, e.g. Banyan's
+#: se-configdata record). Set by :func:`build_router_from_manifest`.
+_DEFAULT_PART_ID: Optional[str] = None
+
+
+def _claims_tenant_id(request: Request) -> Optional[str]:
+    """``tenant_id`` of the authenticated caller, if the auth layer set one."""
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict):
+        tenant_id = user.get("tenant_id")
+        return str(tenant_id) if tenant_id else None
+    return None
+
+
 def _extract_partition_key(request: Request) -> tuple:
     """Extract partition_key from the endpoint path and the Part-Id header.
 
     Returns (partition_key, endpoint_id, part_id). ``endpoint_id`` comes from the
     URL path; ``part_id`` is supplied by the ``Part-Id`` header (the ``part_id``
     path parameter remains a legacy fallback for any older route templates).
+
+    When the request names no partition, it falls back to:
+
+    1. the authenticated caller's ``tenant_id`` claim (set on
+       ``request.state.user`` by the auth bridge) — Banyan uses the tenant as
+       the partition, so engine-to-engine loopback calls, which authenticate
+       with a service token carrying the tenant but send no ``Part-Id``,
+       land in the caller's tenant;
+    2. the deployment's configured ``part_id`` (setting) for callers without a
+       tenant (e.g. platform admins) — the same fallback the engines apply
+       (``params.get("part_id", setting["part_id"])``).
+
+    With neither available the request is still rejected with 400.
     """
     endpoint_id = request.path_params.get("endpoint_id", "")
     part_id = (
@@ -366,6 +405,8 @@ def _extract_partition_key(request: Request) -> tuple:
         # case-insensitive, but hyphen vs underscore are distinct names.
         or request.headers.get("part_id")
         or request.path_params.get("part_id")
+        or _claims_tenant_id(request)
+        or _DEFAULT_PART_ID
     )
 
     if not part_id:
@@ -950,6 +991,8 @@ def _make_websocket_handler(
     connection_manager: Any = None,
     auth_provider: str = "local",
     ping_dispatch_fn: Optional[Callable] = None,
+    setting: Optional[Dict[str, Any]] = None,
+    authorizer_options: Optional[Dict[str, Any]] = None,
 ) -> Callable:
     """Create an async WebSocket handler that authenticates, registers the
     connection, and dispatches incoming messages.
@@ -970,7 +1013,8 @@ def _make_websocket_handler(
             May be ``None`` — the handler will send an error message for each
             incoming request.
         connection_manager: The ``ConnectionManager`` instance.
-        auth_provider: ``"local"`` or ``"cognito"`` — selects the JWT verifier.
+        auth_provider: ``"local"``, ``"cognito"`` or ``"authorizer"`` —
+            selects the handshake verifier (see ``auth/websocket.py``).
         ping_dispatch_fn: Optional callable (the module's GraphQL dispatch) used
             to answer ``ping`` by running ``{ ping }``. If ``None``, ping is
             answered with a lightweight gateway-level pong.
@@ -981,7 +1025,9 @@ def _make_websocket_handler(
         from .auth.websocket import authenticate_websocket
 
         # Authenticate before accepting — closes with 4001/4002 on failure
-        claims, part_id = await authenticate_websocket(websocket, auth_provider)
+        claims, part_id = await authenticate_websocket(
+            websocket, auth_provider, setting, authorizer_options
+        )
         if claims is None:
             return  # already closed by authenticate_websocket
 
@@ -1373,6 +1419,12 @@ def build_router_from_manifest(
     """
     router = APIRouter()
     setting = setting or {}
+    global _DEFAULT_PART_ID
+    default_part_id = str(setting.get("part_id") or "").strip()
+    # Ignore unfilled template placeholders such as "<TENANT_PART_ID>".
+    _DEFAULT_PART_ID = (
+        default_part_id if default_part_id and not default_part_id.startswith("<") else None
+    )
 
     for module in modules:
         logger.info(f"Registering module: {module.name} (transport={module.transport})")
@@ -1452,8 +1504,10 @@ def build_router_from_manifest(
                 handler = _make_websocket_handler(
                     dispatch_fn=ws_dispatch_fn,
                     connection_manager=connection_manager,
-                    auth_provider=auth_provider,
+                    auth_provider=route.auth_provider or auth_provider,
                     ping_dispatch_fn=ws_ping_dispatch_fn,
+                    setting=setting,
+                    authorizer_options=route.authorizer,
                 )
 
                 # WebSocket routes do not use HTTP auth dependencies

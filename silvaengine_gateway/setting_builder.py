@@ -422,6 +422,18 @@ def _resolve_setting(key: str, spec: Dict[str, Any]) -> Any:
 SETTING_SOURCE_ENV = "SETTING_SOURCE"
 SETTING_SOURCE_DDB = "se-configdata"
 
+#: Where the se-configdata record lives: "dynamodb" (default) |
+#: "postgresql". The PostgreSQL backend keeps the same record shape — one
+#: row per (setting_id, variable) with a JSON ``value`` — in a table of the
+#: deployment's own PostgreSQL, so a stack can run without DynamoDB.
+BACKEND_ENV = "SE_CONFIGDATA_BACKEND"
+#: PostgreSQL backend: table name (default ``se_configdata``) and DSN.
+#: The DSN defaults to the gateway's ``database_url`` / ``db_*`` settings
+#: (``DATABASE_URL`` or ``PG_HOST`` / ``PG_PORT`` / ``PG_USER`` /
+#: ``PG_PASSWORD`` / ``PG_DB``).
+PG_TABLE_ENV = "SE_CONFIGDATA_PG_TABLE"
+PG_URL_ENV = "SE_CONFIGDATA_DATABASE_URL"
+
 #: Bootstrap variables (read from the environment, NOT the setting dict —
 #: the record itself cannot describe how to reach it).
 STAGE_ENV = "ADAPTER_STAGE"
@@ -499,6 +511,89 @@ def _setting_id() -> str:
 
 
 def _read_configdata_record(setting: Dict[str, Any]) -> Dict[str, Any]:
+    """Read the se-configdata record from the configured backend."""
+    backend = os.getenv(BACKEND_ENV, "dynamodb").strip().lower() or "dynamodb"
+    if backend in ("postgresql", "postgres"):
+        return _read_configdata_record_pg(setting)
+    if backend != "dynamodb":
+        raise ValueError(
+            f"Unknown {BACKEND_ENV}={backend!r} (expected dynamodb or postgresql)"
+        )
+    return _read_configdata_record_ddb(setting)
+
+
+def _configdata_pg_url(setting: Dict[str, Any]) -> str:
+    """DSN for the PostgreSQL se-configdata backend (bootstrap from env)."""
+    url = os.getenv(PG_URL_ENV, "").strip() or str(setting.get("database_url") or "")
+    if url:
+        return url
+    from urllib.parse import quote_plus
+
+    host = setting.get("db_host")
+    user = setting.get("db_user")
+    database = setting.get("db_schema")
+    if not (host and user and database):
+        raise ValueError(
+            f"{BACKEND_ENV}=postgresql needs {PG_URL_ENV} / DATABASE_URL or "
+            "PG_HOST + PG_USER + PG_DB to reach the se-configdata table"
+        )
+    password = quote_plus(str(setting.get("db_password") or ""))
+    port = setting.get("db_port") or 5432
+    return (
+        f"postgresql+psycopg://{quote_plus(str(user))}:{password}"
+        f"@{host}:{port}/{database}"
+    )
+
+
+def _read_configdata_record_pg(setting: Dict[str, Any]) -> Dict[str, Any]:
+    """Query the PostgreSQL se-configdata table for the setting_id.
+
+    Table shape (see docker-banyanos-gateway ``scripts/seed_seconfig_pg.py``)::
+
+        setting_id TEXT, variable TEXT, value JSONB,
+        PRIMARY KEY (setting_id, variable)
+    """
+    import re
+
+    from sqlalchemy import create_engine, text
+
+    table_name = os.getenv(PG_TABLE_ENV, "se_configdata").strip() or "se_configdata"
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?", table_name):
+        raise ValueError(f"Invalid {PG_TABLE_ENV}: {table_name!r}")
+
+    record: Dict[str, Any] = {}
+    engine = create_engine(_configdata_pg_url(setting), pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                # CAST to text so every value is JSON text regardless of
+                # driver (psycopg decodes JSONB, and a decoded JSON string
+                # would be indistinguishable from JSON text).
+                text(
+                    f"SELECT variable, CAST(value AS TEXT) FROM {table_name} "
+                    "WHERE setting_id = :sid"
+                ),
+                {"sid": _setting_id()},
+            )
+            for variable, value in rows:
+                record[str(variable)] = json.loads(value) if value is not None else None
+    except Exception as e:
+        raise ValueError(
+            f"Failed to read se-configdata table '{table_name}' (postgresql, "
+            f"setting_id={_setting_id()}): {e}"
+        ) from e
+    finally:
+        engine.dispose()
+
+    if not record:
+        raise ValueError(
+            f"Cannot find values with the setting_id ({_setting_id()}) "
+            f"in table '{table_name}' (postgresql)."
+        )
+    return record
+
+
+def _read_configdata_record_ddb(setting: Dict[str, Any]) -> Dict[str, Any]:
     """Query se-configdata rows for the setting_id and flatten them.
 
     Uses the boto3 resource API: items come back deserialized to native
@@ -616,6 +711,9 @@ def _apply_env_overrides(merged: Dict[str, Any]) -> Dict[str, Any]:
         key = name[len(OVERRIDE_PREFIX):].strip()
         if not key:
             continue
+        # Windows upper-cases environment variable names, so the suffix may
+        # not match the record's key case — target the existing key.
+        key = next((k for k in merged if k.lower() == key.lower()), key)
         merged[key] = value
         logger.warning(
             "SETTING_OVERRIDE_%s applied — env override beats se-configdata",

@@ -1,10 +1,38 @@
 ﻿# -*- coding: utf-8 -*-
-"""WebSocket JWT verification helpers."""
+"""WebSocket handshake authentication helpers.
+
+Providers (chosen per route; default = the gateway ``auth_provider``):
+
+- ``local``      — gateway-issued JWT (``verify_local_jwt``);
+- ``cognito``    — Cognito JWT;
+- ``authorizer`` — any Lambda-style authorizer class, set up through
+  variables instead of code. The class is built as ``cls(logger, **setting)``
+  and its method is called with a synthesized proxy event — the same
+  contract the HTTP auth bridges use. Each option is read from the route's
+  ``authorizer`` mapping first, then from the gateway setting
+  (``settings.yaml`` → environment), then the default:
+
+  - ``class`` / ``ws_authorizer`` / ``WS_AUTHORIZER`` — required,
+    ``"package.module:ClassName"``;
+  - ``method`` / ``ws_authorizer_method`` / ``WS_AUTHORIZER_METHOD`` —
+    default ``verify_permission``;
+  - ``partition_claim`` / ``ws_partition_claim`` / ``WS_PARTITION_CLAIM`` —
+    default ``tenant_id``;
+  - ``admin_claim`` / ``ws_admin_claim`` / ``WS_ADMIN_CLAIM`` —
+    default ``is_admin``.
+
+  Claims are read from the returned event's ``requestContext.authorizer``.
+  With a ``partition_claim``, a non-admin caller may only use the partition
+  named in that claim, which is also the default when the client sends none.
+  Set ``partition_claim`` (or ``admin_claim``) to ``none`` to turn it off.
+"""
 
 from __future__ import print_function
 
 __author__ = "silvaengine"
 
+import asyncio
+import importlib
 import logging
 from typing import Any, Dict, Optional, Tuple
 
@@ -120,12 +148,142 @@ def _safe_path(websocket: WebSocket) -> str:
         return "<unknown>"
 
 
+_AUTHORIZER_DEFAULTS = {
+    "method": "verify_permission",
+    "partition_claim": "tenant_id",
+    "admin_claim": "is_admin",
+}
+_AUTHORIZER_SETTING_KEYS = {
+    "class": "ws_authorizer",
+    "method": "ws_authorizer_method",
+    "partition_claim": "ws_partition_claim",
+    "admin_claim": "ws_admin_claim",
+}
+
+
+def resolve_authorizer_options(
+    route_options: Optional[Dict[str, Any]],
+    setting: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Route ``authorizer`` options over gateway settings over defaults."""
+    route_options = dict(route_options or {})
+    setting = setting or {}
+    resolved: Dict[str, Any] = {}
+    for key, setting_key in _AUTHORIZER_SETTING_KEYS.items():
+        value = route_options.get(key)
+        if value in (None, ""):
+            value = setting.get(setting_key)
+        if value in (None, ""):
+            value = _AUTHORIZER_DEFAULTS.get(key)
+        if value is False or str(value).strip().lower() == "none":
+            value = None  # explicit opt-out, e.g. no partition binding
+        resolved[key] = value
+    return resolved
+
+
+def _load_authorizer_class(path: str) -> Any:
+    module_name, _, attr = str(path).partition(":")
+    if not module_name or not attr:
+        raise ImportError(
+            f"authorizer class must be 'package.module:Class', got {path!r}"
+        )
+    return getattr(importlib.import_module(module_name), attr)
+
+
+def _authorizer_proxy_event(websocket: WebSocket, token: str) -> Dict[str, Any]:
+    """Lambda-style proxy event for an authorizer. Browsers cannot set
+    headers on a WebSocket upgrade, so the ``?token=`` value is presented as
+    ``Authorization: Bearer <token>`` and dropped from the query."""
+    headers = {k: v for k, v in websocket.headers.items()}
+    headers["authorization"] = f"Bearer {token}"
+    query = {k: v for k, v in websocket.query_params.items() if k != "token"}
+    return {
+        "httpMethod": "GET",
+        "path": websocket.url.path,
+        "headers": headers,
+        "queryStringParameters": query,
+        "body": None,
+        "requestContext": {"http": {"method": "GET"}},
+    }
+
+
+async def verify_websocket_token_authorizer(
+    websocket: WebSocket,
+    options: Dict[str, Any],
+    setting: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Verify the handshake token through the configured authorizer class.
+
+    Fails closed: any import, configuration or verification error closes the
+    socket and returns ``None``.
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        logger.warning(
+            "WebSocket auth failed: no token in query params (path=%s)",
+            _safe_path(websocket),
+        )
+        await websocket.close(code=WS_CLOSE_AUTH_FAILURE, reason="Missing token")
+        return None
+
+    try:
+        if not options.get("class"):
+            raise ImportError("no authorizer class configured (WS_AUTHORIZER)")
+        authorizer_cls = _load_authorizer_class(options["class"])
+        authorizer = authorizer_cls(
+            logging.getLogger("silvaengine_gateway.ws_authorizer"),
+            **dict(setting or {}),
+        )
+        method = getattr(authorizer, options["method"])
+    except Exception as exc:  # noqa: BLE001 — misconfiguration fails closed
+        logger.error(
+            "WebSocket authorizer unavailable (path=%s): %s",
+            _safe_path(websocket),
+            exc,
+        )
+        await websocket.close(code=1011, reason="Authorizer unavailable")
+        return None
+
+    event = _authorizer_proxy_event(websocket, token)
+    try:
+        # Authorizers may block (e.g. DB role lookups) — use a worker thread.
+        result = await asyncio.get_running_loop().run_in_executor(
+            None, method, event, None
+        )
+    except Exception as exc:  # noqa: BLE001 — any failure rejects the upgrade
+        logger.warning(
+            "WebSocket auth failed: authorizer rejected token (path=%s, error=%s)",
+            _safe_path(websocket),
+            exc,
+        )
+        await websocket.close(code=WS_CLOSE_AUTH_FAILURE, reason="Invalid token")
+        return None
+
+    claims = ((result or {}).get("requestContext") or {}).get("authorizer")
+    if not isinstance(claims, dict) or not claims:
+        logger.warning(
+            "WebSocket auth failed: authorizer returned no identity (path=%s)",
+            _safe_path(websocket),
+        )
+        await websocket.close(
+            code=WS_CLOSE_AUTH_FAILURE, reason="Authentication required"
+        )
+        return None
+    return claims
+
+
 async def authenticate_websocket(
     websocket: WebSocket,
     auth_provider: str = "local",
+    setting: Optional[Dict[str, Any]] = None,
+    authorizer_options: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Verify token and partition context for a WebSocket handshake."""
-    if auth_provider == "cognito":
+    options: Dict[str, Any] = {}
+    if auth_provider == "authorizer":
+        options = resolve_authorizer_options(authorizer_options, setting)
+        claims = await verify_websocket_token_authorizer(websocket, options, setting)
+    elif auth_provider == "cognito":
         claims = await verify_websocket_token_cognito(websocket)
     else:
         claims = await verify_websocket_token(websocket)
@@ -145,6 +303,28 @@ async def authenticate_websocket(
         return None, None
 
     part_id = resolve_websocket_part_id(websocket)
+
+    partition_claim = options.get("partition_claim")
+    if partition_claim:
+        # Bind the partition to the verified identity: a non-admin caller may
+        # not register a connection under another tenant.
+        claimed = claims.get(partition_claim)
+        claimed = str(claimed) if claimed else None
+        is_admin = bool(claims.get(options.get("admin_claim") or ""))
+        if part_id and claimed and part_id != claimed and not is_admin:
+            logger.warning(
+                "WebSocket partition failed: part_id does not match the "
+                "token's %s claim (path=%s)",
+                partition_claim,
+                _safe_path(websocket),
+            )
+            await websocket.close(
+                code=WS_CLOSE_PARTITION_ERROR,
+                reason="Partition not allowed",
+            )
+            return None, None
+        part_id = part_id or claimed
+
     if not part_id:
         logger.warning(
             "WebSocket partition failed: no part_id (path=%s)",

@@ -8,7 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from starlette.websockets import WebSocketState
+
 from silvaengine_gateway.websocket_manager import ConnectionManager
+
+
+def _connected_ws() -> MagicMock:
+    """Mock socket in the CONNECTED state (the manager skips closed sockets)."""
+    ws = MagicMock()
+    ws.application_state = WebSocketState.CONNECTED
+    return ws
 
 
 class TestConnectionManager:
@@ -53,14 +62,14 @@ class TestConnectionManager:
 
     def test_connection_manager_send_no_loop(self, manager):
         """Send returns False when no event loop is set."""
-        ws = MagicMock()
+        ws = _connected_ws()
         manager.register("conn-1", ws)
         result = manager.send_to_connection("conn-1", {"hello": "world"})
         assert result is False
 
     def test_connection_manager_send_from_thread(self, manager):
         """Sync thread can schedule a send on the event loop."""
-        ws = MagicMock()
+        ws = _connected_ws()
         ws.send_text = AsyncMock()
 
         # Set up a real event loop in a separate thread
@@ -94,7 +103,7 @@ class TestConnectionManager:
         async def run_case():
             manager.set_event_loop(asyncio.get_running_loop())
 
-            ws = MagicMock()
+            ws = _connected_ws()
 
             async def send_text(payload):
                 await asyncio.sleep(0.01)
@@ -113,7 +122,7 @@ class TestConnectionManager:
 
     def test_connection_manager_send_string_data(self, manager):
         """String data is sent as-is (no JSON serialization)."""
-        ws = MagicMock()
+        ws = _connected_ws()
         ws.send_text = AsyncMock()
 
         loop = asyncio.new_event_loop()
