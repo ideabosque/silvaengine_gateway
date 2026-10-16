@@ -183,12 +183,12 @@ settings:
     type: int
 
   # ── Dual-backend selection (forwarded to all module Configs) ──────────
-  # db_backend: "dynamodb" (default) or "postgresql". When "postgresql",
+  # db_backend: "postgresql" (default since 2026-10-15) or "dynamodb". When "postgresql",
   # db_* are used instead of DynamoDB. DATABASE_URL takes precedence over
   # the individual PG_* vars where consumers support it (Alembic).
   db_backend:
     env: db_backend
-    default: dynamodb
+    default: postgresql
   db_host:
     env: [PG_HOST, db_host]
   db_port:
