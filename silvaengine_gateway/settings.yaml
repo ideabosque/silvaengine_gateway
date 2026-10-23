@@ -539,3 +539,10 @@ settings:
     env: GATEWAY_PROXY_TIMEOUT
     default: "30"
     type: float
+  # -- Ingredient Optimization Engine --
+  ioa_pg_table_prefix:
+    env: IOA_PG_TABLE_PREFIX
+    default: ''
+  ioa_db_backend:
+    env: IOA_DB_BACKEND
+    default: dynamodb

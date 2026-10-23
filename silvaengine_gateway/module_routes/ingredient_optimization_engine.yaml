@@ -1,0 +1,18 @@
+# Ingredient Optimization Engine -- module manifest fragment
+# Included by routes.yaml via `!include module_routes/ingredient_optimization_engine.yaml`
+
+name: ingredient_optimization_engine
+package: ingredient_optimization_engine
+invoker_class_name: IngredientOptimizationEngine
+transport: graphql
+config_class: "ingredient_optimization_engine.handlers.config:Config"
+config_init_style: dict
+config_overrides:
+  pg_table_prefix: "{setting:ioa_pg_table_prefix}"
+  db_backend: "{setting:ioa_db_backend}"
+routes:
+  - path: "/{endpoint_id}/ingredient_optimization_graphql"
+    handler_type: graphql
+    dispatch: "ingredient_optimization_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

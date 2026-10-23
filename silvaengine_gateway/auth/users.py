@@ -24,6 +24,18 @@ class LocalUser:
         self.roles = roles or []
 
     def verify(self, password: str) -> bool:
+        # bcrypt directly first: passlib's bcrypt backend breaks with bcrypt>=4.1
+        # (missing __about__, then ValueError in its wrap-bug probe), which made
+        # every users-file login fail.
+        if self.hashed_password.startswith(("$2a$", "$2b$", "$2y$")):
+            try:
+                import bcrypt
+
+                return bcrypt.checkpw(
+                    password.encode("utf-8")[:72], self.hashed_password.encode("utf-8")
+                )
+            except ImportError:
+                pass
         try:
             from passlib.context import CryptContext
 
