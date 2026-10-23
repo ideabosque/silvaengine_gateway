@@ -103,3 +103,5 @@ modules:
 
   # ── Remote Gateway Proxy (reverse-proxy to another gateway instance) ────
   - !include module_routes/remote_gateway_proxy.yaml
+  - !include module_routes/ingredient_optimization_engine.yaml
+

@@ -2,6 +2,10 @@
 # Included by routes.yaml via `!include routes/rfq_engine.yaml`
 
 name: rfq_engine
+# Banyan perm bridge: resolve caller roles/claims server-side (per-user
+# PDP lookups) so downstream engines see promoted role claims. Without
+# this only FlexJWT runs and state.user carries raw token claims.
+auth_bridge: banyan
 package: rfq_engine
 invoker_class_name: RFQEngine
 transport: graphql
