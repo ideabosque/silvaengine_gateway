@@ -1,0 +1,22 @@
+# IO Operations Growth Engine — module manifest fragment
+# Included by routes.yaml via `!include module_routes/io_operations_growth_engine.yaml`
+
+name: io_operations_growth_engine
+package: io_operations_growth_engine
+invoker_class_name: IOOperationsGrowthEngine
+transport: graphql
+config_class: "io_operations_growth_engine.handlers.config:Config"
+config_init_style: dict
+config_overrides:
+  pg_table_prefix: "{setting:iog_pg_table_prefix}"
+  db_schema: "{setting:iog_db_schema}"
+  db_backend: postgresql
+  initialize_tables: "1"
+  identity_fallback: dev
+  production: "0"
+routes:
+  - path: "/{endpoint_id}/iog_growth_graphql"
+    handler_type: graphql
+    dispatch: "io_operations_growth_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true
