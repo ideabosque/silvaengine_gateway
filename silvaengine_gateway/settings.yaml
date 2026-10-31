@@ -267,7 +267,7 @@ settings:
     default: ""
   iog_db_schema:
     env: IOG_DB_SCHEMA
-    default: ""
+    default: iog_test_scratch
   ame_pg_table_prefix:
     env: AME_PG_TABLE_PREFIX
     default: ame_
@@ -594,11 +594,3 @@ settings:
   ioa_db_backend:
     env: IOA_DB_BACKEND
     default: dynamodb
-
-  # -- IO Operations Growth Engine --
-  iog_pg_table_prefix:
-    env: IOG_PG_TABLE_PREFIX
-    default: iog_
-  iog_db_schema:
-    env: IOG_DB_SCHEMA
-    default: iog_test_scratch
