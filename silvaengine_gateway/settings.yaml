@@ -80,6 +80,12 @@ settings:
   admin_static_token:
     env: ADMIN_STATIC_TOKEN
     default: ""
+  admin_role:
+    env: ADMIN_ROLE
+    default: admin
+  admin_roles:
+    env: ADMIN_ROLES
+    default: [admin]
   local_user_file:
     env: LOCAL_USER_FILE
   # Only used when auth_provider=module (routes/auth.py::_get_module_auth_token).

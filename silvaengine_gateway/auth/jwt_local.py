@@ -71,17 +71,15 @@ def verify_local_jwt(token: str) -> Dict[str, Any]:
 def get_or_create_admin_token() -> str:
     if GatewayConfig.admin_static_token:
         return GatewayConfig.admin_static_token
-    # System plan 5.1 / E-2 (dev test bed): the local admin acts as the QA/QC
-    # lead — claims carry user_id + roles so server-side RBAC (E-2)
-    # attributes and authorizes decisions (Cognito replaces this in uat/prod).
+    # Both role claim forms come from the same configured local identity.
     token = create_local_jwt(
         {
             "username": GatewayConfig.admin_username,
             "user_id": GatewayConfig.admin_username,
-            "roles": ["qa-lead"],
-            "role": "admin",
+            "roles": list(GatewayConfig.admin_roles),
+            "role": GatewayConfig.admin_role,
         },
         forever=True,
     )
-    GatewayConfig.get_logger().info(f"Generated static admin token:\n   {token}")
+    GatewayConfig.get_logger().info("Generated local admin token")
     return token
