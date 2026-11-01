@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 import boto3
 
 from .auth.users import LocalUser, load_users
+from .auth.roles import resolve_admin_roles
 
 
 class GatewayConfig:
@@ -41,6 +42,8 @@ class GatewayConfig:
     admin_username: str = ""
     admin_password: str = ""
     admin_static_token: str = ""
+    admin_role: str = "admin"
+    admin_roles: list = ["admin"]
 
     # auth_provider="module" settings (see routes/auth.py::_get_module_auth_token).
     # Not hardcoded to any specific engine — auth_module_dispatch is a
@@ -116,6 +119,12 @@ class GatewayConfig:
             cls.admin_username = ""
             cls.admin_password = ""
             cls.admin_static_token = ""
+            cls.admin_role = "admin"
+            cls.admin_roles = ["admin"]
+            # A generated token must not survive a new identity/role/signing
+            # configuration. Externally supplied static tokens remain unchanged.
+            from .auth.jwt_local import get_or_create_admin_token
+            get_or_create_admin_token.cache_clear()
             cls.auth_module_dispatch = "user_engine.main:dispatch_graphql"
             cls.cognito_user_pool_id = ""
             cls.cognito_app_client_id = ""
@@ -141,6 +150,7 @@ class GatewayConfig:
         cls.admin_username = setting.get("admin_username", os.getenv("ADMIN_USERNAME", ""))
         cls.admin_password = setting.get("admin_password", os.getenv("ADMIN_PASSWORD", ""))
         cls.admin_static_token = setting.get("admin_static_token", os.getenv("ADMIN_STATIC_TOKEN", ""))
+        cls.admin_role, cls.admin_roles = resolve_admin_roles(setting)
         cls.auth_module_dispatch = setting.get(
             "auth_module_dispatch",
             os.getenv("GATEWAY_AUTH_MODULE_DISPATCH", "user_engine.main:dispatch_graphql"),

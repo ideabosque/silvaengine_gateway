@@ -64,10 +64,23 @@ Protected routes require `Authorization: Bearer <token>`.
 Local authentication supports either:
 
 - `ADMIN_USERNAME` and `ADMIN_PASSWORD`
+- Optional `ADMIN_ROLE` and `ADMIN_ROLES` for that local admin account. With
+  neither set, generated tokens carry `role: "admin"` and `roles: ["admin"]`.
+  `ADMIN_ROLES` accepts CSV (`admin,policy-operator`) or a JSON array
+  (`["admin","policy-operator"]`). With only the list configured, its first
+  role is primary; an explicit `ADMIN_ROLE` must belong to the list. Settings
+  keys `admin_role`/`admin_roles` take precedence over environment variables.
 - `LOCAL_USER_FILE`, containing a JSON array of users with `username`,
   `hashed_password`, and optional `roles`
 
 The default `JWT_SECRET_KEY=CHANGEME` is for development only.
+
+Set these values in the `.env` loaded by the launcher (for `run_daemon.py`,
+`silvaengine_gateway/tests/.env` by default). Restart the gateway and log in
+again after role changes; previously issued JWTs retain their original claims.
+`ADMIN_STATIC_TOKEN`, when supplied, is used unchanged and must be replaced
+separately. These defaults affect only local admin tokens; local users-file
+accounts and external authentication providers retain their own roles.
 
 ## Default Routes
 

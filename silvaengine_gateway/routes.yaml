@@ -40,6 +40,9 @@ modules:
   # ── Supplier Rating Engine ────────────────────────────────────────────
   - !include module_routes/supplier_rating_engine.yaml
 
+  # ── IO Operations Growth Engine ──────────────────────────────────
+  - !include module_routes/io_operations_growth_engine.yaml
+
   # ── MCP Protocol Plugin (via silvaengine_daemon) ──────────────────────
   - !include module_routes/mcp_protocol_plugin.yaml
 

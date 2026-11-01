@@ -91,10 +91,18 @@ def _generate_local_internal_mcp_token(username: str, password: str) -> str:
             if admin_static_token:
                 return admin_static_token
             from jose import jwt
+            from .auth.roles import resolve_admin_roles
+
+            if GatewayConfig._initialized and GatewayConfig.admin_username == admin_username:
+                primary, roles = GatewayConfig.admin_role, GatewayConfig.admin_roles
+            else:
+                primary, roles = resolve_admin_roles({})
 
             payload = {
                 "username": admin_username,
-                "role": "admin",
+                "user_id": admin_username,
+                "role": primary,
+                "roles": list(roles),
                 "perm": True,
             }
             return jwt.encode(
@@ -722,6 +730,24 @@ def _apply_env_overrides(merged: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
+def _resolve_admin_role_settings(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Use YAML defaults together; a single env override defines the pair."""
+    from .auth.roles import resolve_admin_roles
+
+    values = {key: _resolve_setting(key, spec[key])
+              for key in ("admin_role", "admin_roles")}
+    has_primary = bool(os.getenv("ADMIN_ROLE", "").strip())
+    has_roles = bool(os.getenv("ADMIN_ROLES", "").strip())
+    # An unused YAML default must not conflict with an explicit override of
+    # its partner, e.g. ADMIN_ROLE=policy-operator with ADMIN_ROLES omitted.
+    if has_primary and not has_roles:
+        values.pop("admin_roles")
+    elif has_roles and not has_primary:
+        values.pop("admin_role")
+    primary, roles = resolve_admin_roles(values)
+    return {"admin_role": primary, "admin_roles": roles}
+
+
 def build_setting_from_env() -> Dict[str, Any]:
     """Build the gateway setting dict from environment variables.
 
@@ -737,6 +763,7 @@ def build_setting_from_env() -> Dict[str, Any]:
     setting: Dict[str, Any] = {
         key: _resolve_setting(key, entry or {}) for key, entry in spec.items()
     }
+    setting.update(_resolve_admin_role_settings(spec))
 
     # Banyan: overlay the se-configdata record (DDB) when SETTING_SOURCE is
     # enabled — DDB keys win (config unique-source iron rule), with

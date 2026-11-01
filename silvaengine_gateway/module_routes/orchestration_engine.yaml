@@ -7,6 +7,10 @@ transport: graphql
 auth_bridge: banyan  # always goes through real PermAuthorizer, any tenant
 config_class: "orchestration_engine.handlers.config:Config"
 config_init_style: kwargs
+# 挂起观察 worker（A2A WORKING 任务对账 + 恢复，计划 Phase 4 "checkpoint
+# pending work"）：独立线程，ORCHESTRATION_SUSPENSION_WORKER_ENABLED 门控。
+on_startup: "orchestration_engine.deployment.suspension_worker:start_worker"
+on_shutdown: "orchestration_engine.deployment.suspension_worker:stop_worker"
 routes:
   - path: "/{endpoint_id}/orchestration_engine_graphql"
     handler_type: graphql
