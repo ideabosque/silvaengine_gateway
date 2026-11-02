@@ -670,11 +670,21 @@ def create_app(setting: Optional[Dict[str, Any]] = None) -> FastAPI:
     # Rate limiting (global)
     rate_limit = setting.get("rate_limit") or int(os.environ.get("GATEWAY_RATE_LIMIT", "100"))
     rate_window = setting.get("rate_limit_window") or int(os.environ.get("GATEWAY_RATE_WINDOW", "60"))
+    rate_exempt_loopback = setting.get("rate_limit_exempt_loopback")
+    if rate_exempt_loopback is None:
+        rate_exempt_loopback = os.environ.get(
+            "GATEWAY_RATE_LIMIT_EXEMPT_LOOPBACK", "true"
+        ).strip().lower() not in ("0", "false", "no")
+    rate_limit_authenticated = setting.get("rate_limit_authenticated") or int(
+        os.environ.get("GATEWAY_RATE_LIMIT_AUTHENTICATED", "600")
+    )
     app.add_middleware(
         RateLimitMiddleware,
         max_requests=rate_limit,
         window_seconds=rate_window,
         store=rate_limit_store,
+        exempt_loopback=bool(rate_exempt_loopback),
+        authenticated_max_requests=int(rate_limit_authenticated),
     )
 
     # Auth middleware.

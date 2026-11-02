@@ -139,8 +139,25 @@ def make_dynamodb_rate_limit_store(
     return DynamoDBRateLimitStore(table)
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Per-client-IP rate limiter over a pluggable :class:`RateLimitStore`."""
+    """Per-client-IP rate limiter over a pluggable :class:`RateLimitStore`.
+
+    ``exempt_loopback`` (default True) skips requests whose peer is the
+    loopback interface: those are the gateway's own internal hops (engines
+    calling each other through httpx pools at ``127.0.0.1``), so one user
+    action fans out into many of them and they must not exhaust — or share —
+    the external clients' budget. Disable it when a reverse proxy on the same
+    host forwards external traffic over loopback.
+
+    Authenticated callers (claims verified by the auth middleware, which runs
+    before this one) are counted per user — ``user:<sub|user_id>`` — with
+    ``authenticated_max_requests`` (defaults to ``max_requests``), so users
+    behind one proxy/NAT don't share a budget and an SPA's legitimate polling
+    isn't throttled like anonymous traffic. Anonymous callers stay per IP.
+    """
 
     def __init__(
         self,
@@ -148,11 +165,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         max_requests: int = 100,
         window_seconds: int = 60,
         store: Optional[RateLimitStore] = None,
+        exempt_loopback: bool = True,
+        authenticated_max_requests: Optional[int] = None,
     ):
         super().__init__(app)
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.store = store or InMemoryRateLimitStore()
+        self.exempt_loopback = exempt_loopback
+        self.authenticated_max_requests = authenticated_max_requests or max_requests
+
+    @staticmethod
+    def _authenticated_subject(request: Request) -> Optional[str]:
+        claims = getattr(request.state, "user", None)
+        if not isinstance(claims, dict):
+            return None
+        for key in ("sub", "user_id", "username"):
+            value = claims.get(key)
+            if value:
+                return str(value)
+        return None
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
@@ -162,6 +194,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
+        if self.exempt_loopback and client_ip in _LOOPBACK_HOSTS:
+            return await call_next(request)
+
+        subject = self._authenticated_subject(request)
+        if subject:
+            key, limit = f"user:{subject}", self.authenticated_max_requests
+        else:
+            key, limit = client_ip, self.max_requests
 
         if self.store.is_blocking:
             # Offload network I/O so the event loop is not blocked.
@@ -170,14 +210,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             allowed = await asyncio.get_running_loop().run_in_executor(
                 None,
                 self.store.hit,
-                client_ip,
-                self.max_requests,
+                key,
+                limit,
                 self.window_seconds,
             )
         else:
-            allowed = self.store.hit(
-                client_ip, self.max_requests, self.window_seconds
-            )
+            allowed = self.store.hit(key, limit, self.window_seconds)
 
         if not allowed:
             # Return a Response directly. Raising HTTPException inside Starlette
