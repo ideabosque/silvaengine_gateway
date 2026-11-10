@@ -497,6 +497,43 @@ settings:
     env: GOOSE_APPROVAL_TIMEOUT
     default: "120"
 
+  # -- omp bridge (forwarded to a2a_protocol_plugin's OmpAgentHandler) -------
+  # omp sidecar (HTTP + SSE, same protocol as the pi sidecar). The omp
+  # handler also reads these from os.environ as a fallback for older gateway
+  # builds (same gap as GOOSE_*/PI_*).
+  OMP_API_URL:
+    env: OMP_API_URL
+  OMP_SECRET_KEY:
+    env: OMP_SECRET_KEY
+  OMP_CWD:
+    env: OMP_CWD
+    default: /workspace
+  OMP_MODEL:
+    env: OMP_MODEL
+  OMP_THINKING:
+    env: OMP_THINKING
+  OMP_PERMISSION_MODE:
+    env: OMP_PERMISSION_MODE
+    default: auto_allow
+  OMP_BUSY_BEHAVIOR:
+    env: OMP_BUSY_BEHAVIOR
+    default: followUp
+  OMP_STREAM_TIMEOUT:
+    env: OMP_STREAM_TIMEOUT
+    default: "300"
+  OMP_APPROVAL_TIMEOUT:
+    env: OMP_APPROVAL_TIMEOUT
+    default: "120"
+
+  # omp's approval dialog offers "Approve" / "Approve <tool> for this
+  # session" / "Deny". These comma lists (case-insensitive) say which label
+  # is the allow one and which is the deny one; the conventional words
+  # (approve|allow|yes|ok / deny|no|cancel|reject) are used when unset.
+  OMP_APPROVAL_ALLOW_LABELS:
+    env: OMP_APPROVAL_ALLOW_LABELS
+  OMP_APPROVAL_DENY_LABELS:
+    env: OMP_APPROVAL_DENY_LABELS
+
   # -- A2A scheduler (a2a_protocol_plugin/handlers/a2a_scheduler.py) -------
   # Started by the module's on_startup hook. Schedules are a2a_setting
   # records "schedule#<id>" (prompt, agent, cron, timezone) managed from the
