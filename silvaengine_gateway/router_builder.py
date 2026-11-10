@@ -701,6 +701,13 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
     SSE is unidirectional (server → client). Clients send messages
     via a separate POST endpoint (handler_type: rest, dispatch: ...sse_message).
 
+    Replay cursor: every message that carries a daemon SSEManager message
+    id is framed with an SSE ``id:`` line, so a client can reconnect with
+    ``Last-Event-ID`` and have the gateway ask the manager for the messages
+    after that cursor. The ``connected`` and ``heartbeat`` frames carry no
+    ``id:`` line — they are not replayable messages and must not advance the
+    client's cursor.
+
     Args:
         sse_manager_ref: Dotted path to the SSE manager instance
             (e.g. "mcp_daemon_engine.handlers.sse_manager:sse_manager").
@@ -715,6 +722,49 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
             logger.warning(
                 f"SSE manager '{sse_manager_ref}' could not be resolved: {e}"
             )
+
+    def _message_cursor(message: Any) -> Optional[str]:
+        """Return the replay cursor carried by *message*, if any.
+
+        The daemon SSEManager stamps every broadcast message with a
+        monotonic integer ``id``; that value is the replay cursor used with
+        the ``Last-Event-ID`` request header. Messages without a usable
+        numeric id (e.g. the local ``mcp_activity`` metadata frame) simply
+        have no cursor.
+        """
+        if not isinstance(message, dict):
+            return None
+        raw = message.get("id")
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, int):
+            return str(raw)
+        if isinstance(raw, str) and raw.isdigit():
+            return raw
+        return None
+
+    def _format_message_frame(message: Any) -> str:
+        """Render *message* as an SSE frame, adding ``id:`` when it has a cursor."""
+        import json as _json
+
+        payload = _json.dumps(message, default=str)
+        cursor = _message_cursor(message)
+        if cursor is None:
+            return f"data: {payload}\n\n"
+        return f"id: {cursor}\ndata: {payload}\n\n"
+
+    def _replay_cursor(raw_header: Optional[str]) -> Optional[str]:
+        """Normalize a ``Last-Event-ID`` header value to a replay cursor.
+
+        An absent or malformed header degrades to ``None`` (no replay)
+        instead of raising.
+        """
+        if raw_header is None:
+            return None
+        stripped = raw_header.strip()
+        if not stripped.isdigit():
+            return None
+        return stripped
 
     async def sse_handler(request: Request) -> Any:
         from fastapi.responses import StreamingResponse
@@ -740,12 +790,43 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
             partition_key=partition_key,
         )
 
-        # Replay missed messages
-        last_event_id = request.headers.get("last-event-id")
-        missed = await _sse_manager.get_missed_messages(
-            last_event_id,
-            partition_key=partition_key,
-        )
+        # Replay missed messages — a malformed Last-Event-ID degrades to
+        # "no replay" rather than an error.
+        last_event_id = _replay_cursor(request.headers.get("last-event-id"))
+        try:
+            missed = await _sse_manager.get_missed_messages(
+                last_event_id,
+                partition_key=partition_key,
+            )
+        except Exception:
+            logger.warning(
+                "SSE replay lookup failed; continuing without replay",
+                exc_info=True,
+            )
+            missed = []
+
+        # Partition-scope the replay.
+        #
+        # The shared daemon's get_missed_messages() filter accepts history
+        # entries whose partition_key is None, so an entry published without a
+        # partition (e.g. send_to_user without a partition) would be handed to
+        # a client on *any* partition. Re-apply the scoping here: only entries
+        # whose partition_key is exactly the caller's partition are replayed.
+        #
+        # Limitation: this is partition-level scoping only. The shared daemon's
+        # history does not record the recipient of a message, so a user on the
+        # same partition may observe another user's partition-scoped events.
+        # Recipient-level (per-user) isolation is not implemented here.
+        if partition_key:
+            missed = [
+                msg
+                for msg in missed
+                if isinstance(msg, dict) and msg.get("partition_key") == partition_key
+            ]
+        else:
+            # No partition context — replaying an unscoped history is unsafe.
+            missed = []
+
         for msg in missed:
             try:
                 await queue.put(msg)
@@ -787,7 +868,7 @@ def _make_sse_handler(sse_manager_ref: Optional[str] = None) -> Callable:
                 while True:
                     try:
                         message = await asyncio.wait_for(queue.get(), timeout=15)
-                        yield f"data: {_json.dumps(message, default=str)}\n\n"
+                        yield _format_message_frame(message)
                     except asyncio.TimeoutError:
                         # Heartbeat
                         heartbeat = _json.dumps(
