@@ -1,0 +1,15 @@
+# Plugin Engine (Banyanos) — module manifest fragment
+# Included by routes.yaml via `!include module_routes/plugin_engine.yaml`
+
+name: plugin_engine
+package: plugin_engine
+transport: graphql
+auth_bridge: banyan  # always goes through real PermAuthorizer, any tenant
+config_class: "plugin_engine.handlers.config:Config"
+config_init_style: kwargs
+routes:
+  - path: "/{endpoint_id}/plugin_engine_graphql"
+    handler_type: graphql
+    dispatch: "plugin_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: false

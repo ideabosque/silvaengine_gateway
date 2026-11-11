@@ -86,6 +86,9 @@ modules:
   # ── Prompt Engine (Banyanos) ───────────────────────────────────────────
   - !include module_routes/prompt_engine.yaml
 
+  # ── Plugin Engine (Banyanos) ───────────────────────────────────────────
+  - !include module_routes/plugin_engine.yaml
+
   # ── AI Coordination Engine ───────────────────────────────────────────
   - !include module_routes/ai_coordination_engine.yaml
 
